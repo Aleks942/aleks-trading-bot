@@ -7,6 +7,7 @@ from core.indicators import detect_impulse, detect_volume_spike
 from core.divergence import find_rsi_divergence
 from core.volatility import detect_volatility_breakout
 from core.moneyflow import detect_money_flow_shift
+from core.phases import detect_market_phase
 
 # TOKEN твоего бота
 TOKEN = "8473865365:AAH4biKKokz6Io23ZkqBuO7Q0HnzTdXCT9o"
