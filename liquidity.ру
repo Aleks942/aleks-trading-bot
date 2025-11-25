@@ -1,0 +1,67 @@
+import numpy as np
+import pandas as pd
+
+
+def liquidity_levels(df, window=20, sensitivity=0.7):
+    """
+    Находит уровни ликвидности (поддержки/сопротивления),
+    где часто реагирует цена.
+    """
+
+    levels = []
+    prices = df.close.values
+
+    for i in range(window, len(prices) - window):
+        low_range = prices[i] < min(prices[i - window:i + window])
+        high_range = prices[i] > max(prices[i - window:i + window])
+
+        if low_range:
+            levels.append(("support", prices[i]))
+
+        if high_range:
+            levels.append(("resistance", prices[i]))
+
+    # фильтруем уровни, оставляя самые важные
+    filtered = []
+    for t, lvl in levels:
+        if not filtered or abs(lvl - filtered[-1][1]) > np.mean(prices) * (1 - sensitivity) / 30:
+            filtered.append((t, lvl))
+
+    return filtered
+
+
+def detect_order_blocks(df, period=12):
+    """
+    Ищет блоки ордеров (Order Blocks),
+    что часто является зоной входа/разворота.
+    """
+
+    blocks = []
+    for i in range(period, len(df)):
+        candle = df.iloc[i]
+        prev = df.iloc[i - period:i]
+
+        # бычий блок — крупные покупки
+        if candle.close > prev.close.mean() and candle.volume > prev.volume.mean() * 1.5:
+            blocks.append(("bullish_block", candle.low))
+
+        # медвежий блок — крупные продажи
+        if candle.close < prev.close.mean() and candle.volume > prev.volume.mean() * 1.5:
+            blocks.append(("bearish_block", candle.high))
+
+    return blocks
+
+
+def nearest_liquidity(df):
+    """
+    Находит ближайшие уровни ликвидности к текущей цене.
+    """
+
+    lvls = liquidity_levels(df)
+    if not lvls:
+        return None
+
+    price = df.close.iloc[-1]
+
+    nearest = sorted(lvls, key=lambda x: abs(x[1] - price))[0]
+    return nearest
