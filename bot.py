@@ -9,8 +9,8 @@ from core.volatility import detect_volatility_breakout
 from core.moneyflow import detect_money_flow_shift
 
 # TOKEN твоего бота
-TOKEN = "ТВОЙ_ТОКЕН_ТУТ"
-CHAT_ID = "ТВОЙ_CHAT_ID"
+TOKEN = "8473865365:AAH4biKKokz6Io23ZkqBuO7Q0HnzTdXCT9o"
+CHAT_ID = "851440772"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
