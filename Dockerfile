@@ -1,10 +1,16 @@
 FROM python:3.10-slim
 
+# Создаем рабочую директорию
 WORKDIR /app
 
-COPY requirements.txt /app/
+# Копируем файлы
+COPY requirements.txt .
+
+# Устанавливаем зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . /app/
+# Копируем весь проект
+COPY . .
 
+# Запуск бота
 CMD ["python", "bot.py"]
