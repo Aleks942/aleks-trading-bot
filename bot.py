@@ -15,7 +15,7 @@ from core.moneyflow import detect_money_flow_shift
 from core.phases import detect_market_phase
 from core.datasource import DataSource
 
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TOKEN = 8173288900:AAH_XKitzdmIAryk-g7eko08yAcecgKkhlw
 CHAT_ID = 851440772
 
 bot = Bot(
