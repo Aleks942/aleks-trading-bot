@@ -1,56 +1,43 @@
 import asyncio
-import datetime
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.client.default import DefaultBotSettings
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message
 
 from core.analyzer import analyze_symbol
 
+TOKEN = "84738655365:AAH4biKKokz6Io23ZkqBu070QHnzTdXCT9o"
+CHAT_ID = 851440772
 
-TOKEN = "84738656365:AAH4biKKokz6Io23ZkqBuO70Q0HnzTdXCT9o"
-CHAT_ID = 851440772   # Твой ID
-
-
-# Создаем бота
-bot = Bot(
-    token=TOKEN,
-    default=DefaultBotSettings(parse_mode=ParseMode.HTML)
-)
-
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# ============================
-# Команда /start
-# ============================
-
+# -------------------------------------------------------
+# START
+# -------------------------------------------------------
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
         "<b>Бот запущен.</b>\n"
-        "Используй:\n"
+        "Команда анализа:\n"
         "<b>/signal BTCUSDT 1h</b>"
     )
 
-
-# ============================
-# Команда /signal
-# ============================
-
+# -------------------------------------------------------
+# SIGNAL
+# -------------------------------------------------------
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
     try:
         parts = message.text.split()
-
         symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
         tf = parts[2] if len(parts) > 2 else "1h"
-
     except:
-        await message.answer("Ошибка формата. Пример: /signal BTCUSDT 1h")
+        await message.answer("Ошибка формата. Пример:\n/signal BTCUSDT 1h")
         return
 
     data = analyze_symbol(symbol, tf)
@@ -64,17 +51,14 @@ async def signal_cmd(message: Message):
         f"Таймфрейм: <b>{tf}</b>\n\n"
         f"Направление: <b>{data['signal']}</b>\n"
         f"Сила сигнала: <b>{data['strength']}</b>\n\n"
-        "<b>Причины:</b>\n"
+        f"<b>Причины:</b>\n"
         + "\n".join(f"• {r}" for r in data["reasons"])
     )
-
     await message.answer(text)
 
-
-# ============================
-# Периодический авто-анализ
-# ============================
-
+# -------------------------------------------------------
+# PERIODIC AUTO-SIGNAL
+# -------------------------------------------------------
 async def periodic_task():
     while True:
         try:
@@ -84,27 +68,23 @@ async def periodic_task():
                 text = (
                     f"<b>Авто-сигнал (BTCUSDT 1h)</b>\n\n"
                     f"Направление: <b>{data['signal']}</b>\n"
-                    f"Сила: <b>{data['strength']}</b>\n\n"
-                    "<b>Причины:</b>\n"
+                    f"Сила: <b>{data['strength']}</b>\n"
+                    f"<b>Причины:</b>\n"
                     + "\n".join(f"• {r}" for r in data["reasons"])
                 )
-
                 await bot.send_message(CHAT_ID, text)
 
         except Exception as e:
-            print("Ошибка автоанализа:", e)
+            print("Ошибка авто-задачи:", e)
 
-        await asyncio.sleep(60)  # каждые 60 сек
+        await asyncio.sleep(60)  # раз в минуту
 
-
-# ============================
-# Запуск сервера
-# ============================
-
+# -------------------------------------------------------
+# MAIN
+# -------------------------------------------------------
 async def main():
     asyncio.create_task(periodic_task())
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
