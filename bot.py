@@ -1,28 +1,32 @@
 import asyncio
 import datetime
+
 from aiogram import Bot, Dispatcher, Router
-from aiogram.client.default import DefaultBotProperties
+from aiogram.client.default import DefaultBotSettings
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message
 
 from core.analyzer import analyze_symbol
 
-TOKEN = "84738655365:AAH4biKKokz6Io23ZkqBuO7Q0HnzTdXCT9o"
-CHAT_ID = 851440772   # твой Telegram ID
 
+TOKEN = "84738656365:AAH4biKKokz6Io23ZkqBuO70Q0HnzTdXCT9o"
+CHAT_ID = 851440772   # Твой ID
+
+
+# Создаем бота
 bot = Bot(
     token=TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    default=DefaultBotSettings(parse_mode=ParseMode.HTML)
 )
 
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# =============================================================================
+# ============================
 # Команда /start
-# =============================================================================
+# ============================
 
 @router.message(Command("start"))
 async def start_cmd(message: Message):
@@ -32,9 +36,10 @@ async def start_cmd(message: Message):
         "<b>/signal BTCUSDT 1h</b>"
     )
 
-# =============================================================================
-# Команда /signal BTCUSDT 1h
-# =============================================================================
+
+# ============================
+# Команда /signal
+# ============================
 
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
@@ -65,9 +70,10 @@ async def signal_cmd(message: Message):
 
     await message.answer(text)
 
-# =============================================================================
-# Периодический авто-анализ (каждые 60 сек)
-# =============================================================================
+
+# ============================
+# Периодический авто-анализ
+# ============================
 
 async def periodic_task():
     while True:
@@ -78,7 +84,7 @@ async def periodic_task():
                 text = (
                     f"<b>Авто-сигнал (BTCUSDT 1h)</b>\n\n"
                     f"Направление: <b>{data['signal']}</b>\n"
-                    f"Сила: <b>{data['strength']}</b>\n"
+                    f"Сила: <b>{data['strength']}</b>\n\n"
                     "<b>Причины:</b>\n"
                     + "\n".join(f"• {r}" for r in data["reasons"])
                 )
@@ -86,17 +92,19 @@ async def periodic_task():
                 await bot.send_message(CHAT_ID, text)
 
         except Exception as e:
-            print("Ошибка:", e)
+            print("Ошибка автоанализа:", e)
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # каждые 60 сек
 
-# =============================================================================
+
+# ============================
 # Запуск сервера
-# =============================================================================
+# ============================
 
 async def main():
     asyncio.create_task(periodic_task())
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
