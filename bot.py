@@ -1,23 +1,15 @@
 import asyncio
-import pandas as pd
-
-from aiogram import Bot, Dispatcher
+import datetime
+from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram import Router
 from aiogram.filters import Command
+from aiogram.types import Message
 
-from core.datasource import DataSource
-from core.indicators import detect_impulse, detect_volume_spike
-from core.divergence import find_rsi_divergence
-from core.volatility import detect_volatility_breakout
-from core.moneyflow import detect_money_flow_shift
-from core.phases import detect_market_phase
+from core.analyzer import analyze_symbol
 
-
-TOKEN = 8473865365:AAH4biKKokz6Io23ZkqBu07Q0HnzTdXCT9o
-
-CHAT_ID = 851440772
+TOKEN = "84738655365:AAH4biKKokz6Io23ZkqBuO7Q0HnzTdXCT9o"
+CHAT_ID = 851440772   # твой Telegram ID
 
 bot = Bot(
     token=TOKEN,
@@ -28,76 +20,83 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# Инициализация источника данных
-ds = DataSource()
-
-
+# =============================================================================
 # Команда /start
+# =============================================================================
+
 @router.message(Command("start"))
-async def start_handler(message):
-    await message.answer("Бот запущен! Анализ рынка каждые 60 секунд.")
+async def start_cmd(message: Message):
+    await message.answer(
+        "<b>Бот запущен.</b>\n"
+        "Используй:\n"
+        "<b>/signal BTCUSDT 1h</b>"
+    )
 
+# =============================================================================
+# Команда /signal BTCUSDT 1h
+# =============================================================================
 
-# Функция анализа рынка
-async def analyze():
-    # Загружаем данные с биржи
-    df = ds.get_klines_bybit("BTCUSDT", "15")  
-    # Если данных нет
-    if df is None or len(df) < 50:
-        await bot.send_message(CHAT_ID, "Ошибка получения данных.")
+@router.message(Command("signal"))
+async def signal_cmd(message: Message):
+    try:
+        parts = message.text.split()
+
+        symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
+        tf = parts[2] if len(parts) > 2 else "1h"
+
+    except:
+        await message.answer("Ошибка формата. Пример: /signal BTCUSDT 1h")
         return
 
-    signals = []
+    data = analyze_symbol(symbol, tf)
 
-    # Индикаторы
-    imp = detect_impulse(df)
-    if imp:
-        signals.append(f"🔥 Импульс: {imp}")
+    if "error" in data:
+        await message.answer(f"❌ Ошибка: {data['error']}")
+        return
 
-    vol_spike = detect_volume_spike(df)
-    if vol_spike:
-        signals.append(f"📊 Всплеск объёмов: {vol_spike}")
+    text = (
+        f"<b>Сигнал по {symbol}</b>\n"
+        f"Таймфрейм: <b>{tf}</b>\n\n"
+        f"Направление: <b>{data['signal']}</b>\n"
+        f"Сила сигнала: <b>{data['strength']}</b>\n\n"
+        "<b>Причины:</b>\n"
+        + "\n".join(f"• {r}" for r in data["reasons"])
+    )
 
-    div = find_rsi_divergence(df)
-    if div:
-        signals.append(f"🔃 Дивергенция: {div}")
+    await message.answer(text)
 
-    vola = detect_volatility_breakout(df)
-    if vola:
-        signals.append(f"📈 Волатильность: {vola}")
+# =============================================================================
+# Периодический авто-анализ (каждые 60 сек)
+# =============================================================================
 
-    mf = detect_money_flow_shift(df)
-    if mf:
-        signals.append(f"💰 MoneyFlow: {mf}")
-
-    phase = detect_market_phase(df)
-    if phase:
-        signals.append(f"🌓 Фаза рынка: {phase}")
-
-    # Отправка результата
-    if signals:
-        text = "📡 <b>Анализ рынка:</b>\n\n" + "\n".join(signals)
-    else:
-        text = "Сигналов пока нет."
-
-    await bot.send_message(CHAT_ID, text)
-
-
-# Периодическая задача
 async def periodic_task():
     while True:
-        await analyze()
+        try:
+            data = analyze_symbol("BTCUSDT", "1h")
+
+            if "error" not in data:
+                text = (
+                    f"<b>Авто-сигнал (BTCUSDT 1h)</b>\n\n"
+                    f"Направление: <b>{data['signal']}</b>\n"
+                    f"Сила: <b>{data['strength']}</b>\n"
+                    "<b>Причины:</b>\n"
+                    + "\n".join(f"• {r}" for r in data["reasons"])
+                )
+
+                await bot.send_message(CHAT_ID, text)
+
+        except Exception as e:
+            print("Ошибка:", e)
+
         await asyncio.sleep(60)
 
+# =============================================================================
+# Запуск сервера
+# =============================================================================
 
-# Запуск
 async def main():
     asyncio.create_task(periodic_task())
     await dp.start_polling(bot)
 
-
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
