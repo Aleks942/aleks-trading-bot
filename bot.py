@@ -4,7 +4,8 @@ import pandas as pd
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 
-from core.indicators import detect_impulse, detect_volume_spike
+from core.indicators import volume_spike
+
 from core.divergence import find_rsi_divergence
 from core.volatility import detect_volatility_breakout
 from core.moneyflow import detect_money_flow_shift
