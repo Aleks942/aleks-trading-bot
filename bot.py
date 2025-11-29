@@ -1,21 +1,22 @@
 import asyncio
-import datetime
 import pandas as pd
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram import Router
 from aiogram.filters import Command
 
+from core.datasource import DataSource
 from core.indicators import detect_impulse, detect_volume_spike
 from core.divergence import find_rsi_divergence
 from core.volatility import detect_volatility_breakout
 from core.moneyflow import detect_money_flow_shift
 from core.phases import detect_market_phase
-from core.datasource import DataSource
 
-TOKEN = 8173288900:AAH_XKitzdmIAryk-g7eko08yAcecgKkhlw
+
+TOKEN = 8473865365:AAH4biKKokz6Io23ZkqBu07Q0HnzTdXCT9o
+
 CHAT_ID = 851440772
 
 bot = Bot(
@@ -27,50 +28,43 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# =====================================================
-# Загрузка данных с бирж через DataSource
-# =====================================================
-
-async def load_candles():
-    ds = DataSource()
-    df = ds.get_klines_bybit("BTCUSDT", "1h")
-    return df
+# Инициализация источника данных
+ds = DataSource()
 
 
-# =====================================================
 # Команда /start
-# =====================================================
 @router.message(Command("start"))
-async def start_cmd(message: types.Message):
-    await message.answer("Бот запущен! Я готов анализировать рынок и выдавать сигналы!")
+async def start_handler(message):
+    await message.answer("Бот запущен! Анализ рынка каждые 60 секунд.")
 
 
-# =====================================================
-# Основная функция анализа
-# =====================================================
+# Функция анализа рынка
 async def analyze():
-    df = await load_candles()
-    if df is None:
-        await bot.send_message(CHAT_ID, "Ошибка: нет данных с биржи.")
+    # Загружаем данные с биржи
+    df = ds.get_klines_bybit("BTCUSDT", "15")  
+    # Если данных нет
+    if df is None or len(df) < 50:
+        await bot.send_message(CHAT_ID, "Ошибка получения данных.")
         return
 
     signals = []
 
+    # Индикаторы
     imp = detect_impulse(df)
     if imp:
         signals.append(f"🔥 Импульс: {imp}")
 
     vol_spike = detect_volume_spike(df)
     if vol_spike:
-        signals.append(f"📈 Всплеск объёма: {vol_spike}")
+        signals.append(f"📊 Всплеск объёмов: {vol_spike}")
 
     div = find_rsi_divergence(df)
     if div:
-        signals.append(f"📉 Дивергенция: {div}")
+        signals.append(f"🔃 Дивергенция: {div}")
 
     vola = detect_volatility_breakout(df)
     if vola:
-        signals.append(f"📊 Волатильность: {vola}")
+        signals.append(f"📈 Волатильность: {vola}")
 
     mf = detect_money_flow_shift(df)
     if mf:
@@ -78,30 +72,27 @@ async def analyze():
 
     phase = detect_market_phase(df)
     if phase:
-        signals.append(f"📍 Фаза рынка: {phase}")
+        signals.append(f"🌓 Фаза рынка: {phase}")
 
+    # Отправка результата
     if signals:
-        text = "📊 <b>Анализ рынка</b>:\n\n" + "\n".join(signals)
+        text = "📡 <b>Анализ рынка:</b>\n\n" + "\n".join(signals)
     else:
         text = "Сигналов пока нет."
 
     await bot.send_message(CHAT_ID, text)
 
 
-# =====================================================
-# Циклический запуск
-# =====================================================
-async def periodic():
+# Периодическая задача
+async def periodic_task():
     while True:
         await analyze()
         await asyncio.sleep(60)
 
 
-# =====================================================
-# Запуск бота
-# =====================================================
+# Запуск
 async def main():
-    asyncio.create_task(periodic())
+    asyncio.create_task(periodic_task())
     await dp.start_polling(bot)
 
 
