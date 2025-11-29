@@ -37,7 +37,8 @@ async def analyze():
     df = load_candles()
     signals = []
 
-    imp = detect_impulse(df)
+  imp = None
+
     if imp:
         signals.append(f"🔥 Импульс: {imp}")
 
