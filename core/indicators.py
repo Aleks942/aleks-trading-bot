@@ -48,3 +48,15 @@ def long_wick(df):
 def body_size(df):
     """Размер тела свечи"""
     return abs(df.close.iloc[-1] - df.open.iloc[-1])
+def detect_volume_spike(df, multiplier=1.8):
+    """Обнаружение всплеска объема"""
+    last = df.volume.iloc[-1]
+    avg = df.volume.iloc[-20:].mean()
+    return last > avg * multiplier
+
+
+def detect_impulse(df, threshold=1.5):
+    """Обнаружение импульса по телу свечи"""
+    body = abs(df.close.iloc[-1] - df.open.iloc[-1])
+    avg_body = abs(df.close - df.open).rolling(20).mean().iloc[-1]
+    return body > avg_body * threshold
