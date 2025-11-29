@@ -1,80 +1,102 @@
 import pandas as pd
 from core.datasource import get_ohlcv
-from core.divergence import calculate_divergence
-from core.impulse import detect_impulse
-from core.indicators import rsi, ema
-from core.phases import market_phase
-from core.volatility import volatility_level
-from core.moneyflow import money_flow_index
-
+from core.indicators import (
+    rsi, ema, macd, stochastic, bollinger,
+    atr, adx, vwap, obv, momentum, roc, supertrend
+)
 
 def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
-    """
-    Главный анализатор. Собирает все данные и делает общий вывод.
-    """
 
-    # 1. Берём данные OHLCV
     df = get_ohlcv(symbol, timeframe)
-    if df is None or len(df) < 50:
-        return {"error": "недостаточно данных"}
+    if df is None or len(df) < 60:
+        return {"error": "Недостаточно данных"}
 
-    # 2. Индикаторы
+    # -----------------------------------------------------
+    # Индикаторы высокого уровня
+    # -----------------------------------------------------
+
     df["rsi"] = rsi(df["close"])
     df["ema20"] = ema(df["close"], 20)
     df["ema50"] = ema(df["close"], 50)
-    df["mfi"] = money_flow_index(df)
 
-    # 3. Импульсы
-    impulse = detect_impulse(df)
+    macd_line, signal_line, hist = macd(df["close"])
+    df["macd_hist"] = hist
 
-    # 4. Дивергенции
-    diverg = calculate_divergence(df)
+    df["stoch_k"], df["stoch_d"] = stochastic(df)
+    df["middle_bb"], df["upper_bb"], df["lower_bb"] = bollinger(df["close"])
 
-    # 5. Фазы рынка
-    phase = market_phase(df)
+    df["atr"] = atr(df, 14)
+    df["adx"] = adx(df, 14)
 
-    # 6. Волатильность
-    vol = volatility_level(df)
+    df["vwap"] = vwap(df)
+    df["obv"] = obv(df)
 
-    # 7. Итоговый вывод
-    signal_strength = 0
+    df["momentum"] = momentum(df["close"], 10)
+    df["roc"] = roc(df["close"], 12)
+
+    df["supertrend"] = supertrend(df)
+
+    # -----------------------------------------------------
+    # Оценка сигналов
+    # -----------------------------------------------------
+
+    last = df.iloc[-1]
     reasons = []
+    score = 0
 
-    if impulse == "bullish":
-        signal_strength += 2
-        reasons.append("Импульс вверх")
+    # RSI
+    if last["rsi"] < 30:
+        score += 2
+        reasons.append("RSI перепродан (лонг)")
+    elif last["rsi"] > 70:
+        score -= 2
+        reasons.append("RSI перекуплен (шорт)")
 
-    if diverg == "bullish":
-        signal_strength += 2
-        reasons.append("Бычья дивергенция")
-
-    if df["rsi"].iloc[-1] < 30:
-        signal_strength += 1
-        reasons.append("RSI перепродан")
-
-    if df["close"].iloc[-1] > df["ema20"].iloc[-1] > df["ema50"].iloc[-1]:
-        signal_strength += 1
-        reasons.append("Цена выше EMA → тренд вверх")
-
-    if vol == "high":
-        reasons.append("Высокая волатильность (осторожно)")
-
-    # Финальная классификация:
-    if signal_strength >= 4:
-        final = "STRONG BUY"
-    elif 2 <= signal_strength < 4:
-        final = "BUY"
-    elif -1 <= signal_strength < 2:
-        final = "NEUTRAL"
+    # EMA20 / EMA50
+    if last["ema20"] > last["ema50"]:
+        score += 1
+        reasons.append("EMA20 выше EMA50 (лонг тренд)")
     else:
-        final = "SELL"
+        score -= 1
+        reasons.append("EMA20 ниже EMA50 (шорт тренд)")
+
+    # MACD
+    if last["macd_hist"] > 0:
+        score += 1
+        reasons.append("MACD бычий")
+    else:
+        score -= 1
+        reasons.append("MACD медвежий")
+
+    # SuperTrend
+    if last["close"] > last["supertrend"]:
+        score += 2
+        reasons.append("Цена выше SuperTrend (лонг)")
+    else:
+        score -= 2
+        reasons.append("Цена ниже SuperTrend (шорт)")
+
+    # ADX
+    if last["adx"] > 25:
+        reasons.append("Сильный тренд (ADX > 25)")
+
+    # OBV
+    if last["obv"] > df["obv"].iloc[-5]:
+        score += 1
+        reasons.append("Поток объема вверх")
+
+    # Вывод направления
+    if score >= 3:
+        signal = "LONG"
+    elif score <= -3:
+        signal = "SHORT"
+    else:
+        signal = "NEUTRAL"
 
     return {
         "symbol": symbol,
         "timeframe": timeframe,
-        "signal": final,
-        "strength": signal_strength,
-        "reasons": reasons,
-        "phase": phase,
-        "volatility": vol
+        "signal": signal,
+        "strength": score,
+        "reasons": reasons
     }
