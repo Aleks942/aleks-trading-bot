@@ -4,12 +4,13 @@ import pandas as pd
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 
-from core.indicators import volume_spike
-
-from core.divergence import find_rsi_divergence
-from core.volatility import detect_volatility_breakout
-from core.moneyflow import detect_money_flow_shift
-from core.phases import detect_market_phase
+from core.indicators import (
+    detect_impulse,
+    detect_volume_spike,
+    detect_volatility_breakout,
+    detect_money_flow_shift,
+    detect_market_phase
+)
 
 TOKEN = "8473865365:AAH4biKKokz6Io23ZkqBuO7Q0HnzTdXCT9o"
 CHAT_ID = 851440772
