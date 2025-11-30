@@ -9,7 +9,7 @@ from aiogram.types import Message
 
 from core.analyzer import analyze_symbol
 
-TOKEN = "8473865365:AAH4biKKokz6Io23ZkqBu07Q0HnzTdXCT9o"
+TOKEN = "8473865365:AAH4biKKokz6Io23ZkqBuO7Q0HnzTdXCT9o"
 CHAT_ID = "851440772"
 
 bot = Bot(
