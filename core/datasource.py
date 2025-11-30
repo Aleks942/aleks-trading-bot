@@ -2,9 +2,8 @@ import requests
 import pandas as pd
 import time
 
-
 class DataSource:
-
+    # ... (весь ваш класс DataSource остается без изменений) ...
     def __init__(self):
         self.bybit_url = "https://api.bybit.com"
         self.binance_url = "https://api.binance.com"
@@ -95,3 +94,12 @@ class DataSource:
         df = df.astype(float)
 
         return df
+
+# !!! ДОБАВЬТЕ ЭТУ ФУНКЦИЮ В КОНЕЦ ФАЙЛА !!!
+def get_ohlcv(symbol, timeframe):
+    ds = DataSource()
+    # Пытаемся получить данные с Bybit, если не получается, пробуем Binance
+    df = ds.get_klines_bybit(symbol, timeframe)
+    if df is None or len(df) == 0:
+        df = ds.get_klines_binance(symbol, timeframe)
+    return df
