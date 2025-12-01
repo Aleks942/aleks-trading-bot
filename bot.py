@@ -81,3 +81,27 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+from fastapi import FastAPI, Request
+import uvicorn
+
+app = FastAPI()
+
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
+
+
+@app.on_event("startup")
+async def on_startup():
+    await bot.set_webhook(WEBHOOK_URL)
+
+
+@app.post(WEBHOOK_PATH)
+async def webhook_handler(request: Request):
+    data = await request.json()
+    await bot.send_message(os.getenv("CHAT_ID"), str(data))
+    return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
