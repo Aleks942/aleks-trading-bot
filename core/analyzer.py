@@ -7,15 +7,28 @@ from core.indicators import (
 
 def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
 
+    # Загружаем свечи
     df = get_ohlcv(symbol, timeframe)
-    if df is None or len(df) < 60:
-        return {"error": "Недостаточно данных"}
 
+    # БЕЗОПАСНАЯ ЗАЩИТА (исправляет ошибку Length Mismatch)
+    if df is None or df.empty or len(df) < 60:
+        return {
+            "error": "Недостаточно данных",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "signal": "NEUTRAL",
+            "strength": 0,
+            "reasons": ["Нет или мало данных (меньше 60 свечей)"]
+        }
+
+    # Индикаторы
     df["rsi"] = rsi(df["close"])
     df["ema20"] = ema(df["close"], 20)
     df["ema50"] = ema(df["close"], 50)
+
     macd_line, signal_line, hist = macd(df["close"])
     df["macd_hist"] = hist
+
     df["stoch_k"], df["stoch_d"] = stochastic(df)
     df["middle_bb"], df["upper_bb"], df["lower_bb"] = bollinger(df["close"])
     df["atr"] = atr(df, 14)
@@ -27,8 +40,8 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
     df["supertrend"] = supertrend(df)
 
     last = df.iloc[-1]
-    reasons = []
     score = 0
+    reasons = []
 
     # RSI
     if last["rsi"] < 30:
@@ -38,13 +51,13 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
         score -= 2
         reasons.append("RSI перекуплен (шорт)")
 
-    # EMA20 / EMA50
+    # EMA-тренд
     if last["ema20"] > last["ema50"]:
         score += 1
-        reasons.append("EMA20 выше EMA50 (лонг тренд)")
+        reasons.append("EMA20 выше EMA50 (лонг)")
     else:
         score -= 1
-        reasons.append("EMA20 ниже EMA50 (шорт тренд)")
+        reasons.append("EMA20 ниже EMA50 (шорт)")
 
     # MACD
     if last["macd_hist"] > 0:
@@ -54,7 +67,7 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
         score -= 1
         reasons.append("MACD медвежий")
 
-    # SuperTrend
+    # Supertrend
     if last["close"] > last["supertrend"]:
         score += 2
         reasons.append("Цена выше SuperTrend (лонг)")
@@ -66,15 +79,17 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
     if last["adx"] > 25:
         reasons.append("Сильный тренд (ADX > 25)")
 
-    # OBV (ИСПРАВЛЕННАЯ ПРОВЕРКА)
+    # OBV
     if len(df) >= 5:
         if last["obv"] > df["obv"].iloc[-5]:
             score += 1
-            reasons.append("Поток объема вверх")
+            reasons.append("Рост объёмов (OBV)")
+        else:
+            reasons.append("OBV не растёт")
     else:
-        reasons.append("Недостаточно данных для анализа OBV за 5 периодов.")
+        reasons.append("Недостаточно данных для OBV")
 
-    # Вывод направления
+    # Итоговый сигнал
     if score >= 3:
         signal = "LONG"
     elif score <= -3:
@@ -82,6 +97,7 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
     else:
         signal = "NEUTRAL"
 
+    # Финальный ответ
     return {
         "symbol": symbol,
         "timeframe": timeframe,
@@ -89,3 +105,4 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
         "strength": score,
         "reasons": reasons
     }
+
