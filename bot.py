@@ -74,13 +74,13 @@ async def periodic_task():
         await asyncio.sleep(60)
 
 
-async def main():
+@app.on_event("startup")
+async def on_startup():
+    # запускаем периодическую задачу
     asyncio.create_task(periodic_task())
-    await dp.start_polling(bot)
+    # устанавливаем webhook
+    await bot.set_webhook(WEBHOOK_URL)
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
 from fastapi import FastAPI, Request
 import uvicorn
 
