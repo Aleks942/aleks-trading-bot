@@ -11,34 +11,20 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
     if df is None or len(df) < 60:
         return {"error": "Недостаточно данных"}
 
-    # -----------------------------------------------------
-    # Индикаторы высокого уровня
-    # -----------------------------------------------------
-
     df["rsi"] = rsi(df["close"])
     df["ema20"] = ema(df["close"], 20)
     df["ema50"] = ema(df["close"], 50)
-
     macd_line, signal_line, hist = macd(df["close"])
     df["macd_hist"] = hist
-
     df["stoch_k"], df["stoch_d"] = stochastic(df)
     df["middle_bb"], df["upper_bb"], df["lower_bb"] = bollinger(df["close"])
-
     df["atr"] = atr(df, 14)
     df["adx"] = adx(df, 14)
-
     df["vwap"] = vwap(df)
     df["obv"] = obv(df)
-
     df["momentum"] = momentum(df["close"], 10)
     df["roc"] = roc(df["close"], 12)
-
     df["supertrend"] = supertrend(df)
-
-    # -----------------------------------------------------
-    # Оценка сигналов
-    # -----------------------------------------------------
 
     last = df.iloc[-1]
     reasons = []
@@ -81,15 +67,11 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
         reasons.append("Сильный тренд (ADX > 25)")
 
     # OBV (ИСПРАВЛЕННАЯ ПРОВЕРКА)
-    # Сначала убедимся, что у нас есть достаточно данных (минимум 5 строк), 
-    # прежде чем обращаться к df.iloc[-5]
     if len(df) >= 5:
         if last["obv"] > df["obv"].iloc[-5]:
             score += 1
             reasons.append("Поток объема вверх")
     else:
-        # Если данных меньше 5 строк, мы просто пропускаем эту проверку, 
-        # чтобы избежать ошибки "Length mismatch"
         reasons.append("Недостаточно данных для анализа OBV за 5 периодов.")
 
     # Вывод направления
