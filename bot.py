@@ -5,8 +5,9 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message, Update
-
 from core.analyzer import analyze_symbol
+from fastapi import FastAPI, Request
+import uvicorn
 
 # -------------------------------------------------
 # 1. Настройки и инициализация
@@ -89,17 +90,6 @@ async def periodic_task():
 # -------------------------------------------------
 # 5. Webhook + FastAPI (Render)
 # -------------------------------------------------
-
-from fastapi import FastAPI, Request
-import uvicorn
-
-app = FastAPI()
-
-# 5. Webhook + FastAPI (Render)
-# -------------------------------------------------
-
-from fastapi import FastAPI, Request
-import uvicorn
 
 app = FastAPI()
 
