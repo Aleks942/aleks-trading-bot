@@ -1,6 +1,5 @@
+import os
 import asyncio
-import datetime
-
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
@@ -8,96 +7,72 @@ from aiogram.types import Message
 
 from core.analyzer import analyze_symbol
 
+# Забираем токен из переменной окружения Render
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")   # создадим позже
 
-TOKEN = "8473865365:AAH4biKKokz6Io23ZkqBuO7Q0HnzTdXCT9o"
-CHAT_ID = "851440772"
-
-
-bot = Bot(
-    token=TOKEN,
-    parse_mode=ParseMode.HTML
-)
-
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
 
-# --------------------------
-#   Команда /start
-# --------------------------
-
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
-        "<b>Бот запущен.</b>\n"
+        "<b>Бот запущен</b>\n"
         "Используй:\n"
-        "<b>/signal BTCUSDT 1h</b>"
+        "/signal BTCUSDT 1h"
     )
 
 
-# --------------------------
-#   Команда /signal
-# --------------------------
-
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
-
     try:
         parts = message.text.split()
         symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
         tf = parts[2] if len(parts) > 2 else "1h"
     except:
-        await message.answer("Ошибка формата. Пример: /signal BTCUSDT 1h")
+        await message.answer("Неверный формат. Пример: /signal BTCUSDT 1h")
         return
 
     data = analyze_symbol(symbol, tf)
 
     if "error" in data:
-        await message.answer(f"❌ Ошибка: {data['error']}")
+        await message.answer(f"Ошибка: {data['error']}")
         return
 
     text = (
-        f"<b>Сигнал по {symbol}</b>\n"
+        f"<b>Сигнал {symbol}</b>\n"
         f"Таймфрейм: <b>{tf}</b>\n\n"
         f"Направление: <b>{data['signal']}</b>\n"
         f"Сила: <b>{data['strength']}</b>\n\n"
-        "<b>Причины:</b>\n"
-        + "\n".join(f"• {r}" for r in data["reasons"])
+        "<b>Причины:</b>\n" +
+        "\n".join(f"• {r}" for r in data["reasons"])
     )
 
     await message.answer(text)
 
 
-# --------------------------
-#   Авто-сигналы раз в 1 мин
-# --------------------------
-
 async def periodic_task():
     while True:
         try:
             data = analyze_symbol("BTCUSDT", "1h")
-
             if "error" not in data:
                 text = (
-                    f"<b>Авто-сигнал (BTCUSDT 1h)</b>\n\n"
+                    "<b>Авто-сигнал (BTCUSDT 1h)</b>\n\n"
                     f"Направление: <b>{data['signal']}</b>\n"
                     f"Сила: <b>{data['strength']}</b>\n\n"
-                    "<b>Причины:</b>\n"
-                    + "\n".join(f"• {r}" for r in data["reasons"])
+                    "<b>Причины:</b>\n" +
+                    "\n".join(f"• {r}" for r in data["reasons"])
                 )
-
                 await bot.send_message(CHAT_ID, text)
 
         except Exception as e:
-            print("Ошибка авто-сигнала:", e)
+            print("Ошибка в авто-задаче:", e)
 
         await asyncio.sleep(60)
 
-
-# --------------------------
-#   Запуск сервера
-# --------------------------
 
 async def main():
     asyncio.create_task(periodic_task())
