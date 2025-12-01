@@ -95,16 +95,32 @@ import uvicorn
 
 app = FastAPI()
 
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # https://aleks-trading-bot.onrender.com
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
+# 5. Webhook + FastAPI (Render)
+# -------------------------------------------------
+
+from fastapi import FastAPI, Request
+import uvicorn
+
+app = FastAPI()
+
+# Используем ТОЛЬКО ОДНУ переменную окружения WEBHOOK_URL
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
+WEBHOOK_PATH = "/webhook" # Оставляем путь как константу
 
 @app.on_event("startup")
 async def on_startup():
+    # Мы можем добавить отладочный print, чтобы убедиться в правильности URL
+    print(f"DEBUG: Setting webhook to URL: {WEBHOOK_URL}")
+
     # запускаем фоновую авто-задачу
     asyncio.create_task(periodic_task())
+    
     # устанавливаем webhook для Telegram
-    await bot.set_webhook(WEBHOOK_URL)
+    if WEBHOOK_URL:
+        await bot.set_webhook(WEBHOOK_URL)
+    else:
+        # Если URL не установлен, мы выводим ошибку и не пытаемся установить вебхук
+        print("ERROR: WEBHOOK_URL environment variable not set. Webhook will not be set.")
 
 @app.post(WEBHOOK_PATH)
 async def webhook_handler(request: Request):
@@ -123,5 +139,6 @@ async def webhook_handler(request: Request):
 # -------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
-
+    # Также убедитесь, что переменная PORT правильно считывается здесь
+    PORT = int(os.getenv("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
