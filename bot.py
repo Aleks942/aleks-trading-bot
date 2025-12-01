@@ -1,5 +1,6 @@
 import os
 import asyncio
+
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
@@ -7,15 +8,23 @@ from aiogram.types import Message
 
 from core.analyzer import analyze_symbol
 
-# Забираем токен из переменной окружения Render
+
+# -----------------------------
+# 1. Настройки и инициализация
+# -----------------------------
+
 TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")   # создадим позже
+CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
+
+# -----------------------------
+# 2. Команда /start
+# -----------------------------
 
 @router.message(Command("start"))
 async def start_cmd(message: Message):
@@ -25,6 +34,10 @@ async def start_cmd(message: Message):
         "/signal BTCUSDT 1h"
     )
 
+
+# -----------------------------
+# 3. Команда /signal
+# -----------------------------
 
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
@@ -47,12 +60,16 @@ async def signal_cmd(message: Message):
         f"Таймфрейм: <b>{tf}</b>\n\n"
         f"Направление: <b>{data['signal']}</b>\n"
         f"Сила: <b>{data['strength']}</b>\n\n"
-        "<b>Причины:</b>\n" +
-        "\n".join(f"• {r}" for r in data["reasons"])
+        f"<b>Причины:</b>\n"
+        + "\n".join(f"- {r}" for r in data["reasons"])
     )
 
     await message.answer(text)
 
+
+# -------------------------------------
+# 4. Автозадача (периодические сигналы)
+# -------------------------------------
 
 async def periodic_task():
     while True:
@@ -63,23 +80,19 @@ async def periodic_task():
                     "<b>Авто-сигнал (BTCUSDT 1h)</b>\n\n"
                     f"Направление: <b>{data['signal']}</b>\n"
                     f"Сила: <b>{data['strength']}</b>\n\n"
-                    "<b>Причины:</b>\n" +
-                    "\n".join(f"• {r}" for r in data["reasons"])
+                    "<b>Причины:</b>\n"
+                    + "\n".join(f"- {r}" for r in data["reasons"])
                 )
                 await bot.send_message(CHAT_ID, text)
-
         except Exception as e:
             print("Ошибка в авто-задаче:", e)
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # отправка каждые 60 сек
 
 
-@app.on_event("startup")
-async def on_startup():
-    # запускаем периодическую задачу
-    asyncio.create_task(periodic_task())
-    # устанавливаем webhook
-    await bot.set_webhook(WEBHOOK_URL)
+# -----------------------------
+# 5. Webhook + FastAPI (Render)
+# -----------------------------
 
 from fastapi import FastAPI, Request
 import uvicorn
@@ -93,15 +106,24 @@ WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
 
 @app.on_event("startup")
 async def on_startup():
+    # Запускаем фоновую таску
+    asyncio.create_task(periodic_task())
+
+    # Устанавливаем webhook
     await bot.set_webhook(WEBHOOK_URL)
 
 
 @app.post(WEBHOOK_PATH)
 async def webhook_handler(request: Request):
     data = await request.json()
-    await bot.send_message(os.getenv("CHAT_ID"), str(data))
+    await bot.send_message(CHAT_ID, str(data))
     return {"status": "ok"}
 
 
+# -----------------------------
+# 6. Запуск сервера
+# -----------------------------
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+
