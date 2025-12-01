@@ -80,29 +80,6 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
     if last["adx"] > 25:
         reasons.append("Сильный тренд (ADX > 25)")
 
-    # OBV
-    if last["obv"] > df["obv"].iloc[-5]:
-        score += 1
-        reasons.append("Поток объема вверх")
-
-    # Вывод направления
-    if score >= 3:
-        signal = "LONG"
-        # -----------------------------------------------------
-    # Оценка сигналов (Исправленная секция)
-    # -----------------------------------------------------
-
-    last = df.iloc[-1]
-    reasons = []
-    score = 0
-
-    # ... (Весь остальной код проверок RSI, EMA, MACD, SuperTrend, ADX остается без изменений) ...
-    # ... 
-
-    # ADX
-    if last["adx"] > 25:
-        reasons.append("Сильный тренд (ADX > 25)")
-
     # OBV (ИСПРАВЛЕННАЯ ПРОВЕРКА)
     # Сначала убедимся, что у нас есть достаточно данных (минимум 5 строк), 
     # прежде чем обращаться к df.iloc[-5]
@@ -118,7 +95,10 @@ def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
     # Вывод направления
     if score >= 3:
         signal = "LONG"
-# ... (Остальная часть кода остается без изменений) ...
+    elif score <= -3:
+        signal = "SHORT"
+    else:
+        signal = "NEUTRAL"
 
     return {
         "symbol": symbol,
