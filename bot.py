@@ -8,7 +8,7 @@ from aiogram.types import Message
 from core.analyzer import analyze_symbol
 
 # Забираем токен из переменной окружения Render
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")   # создадим позже
 
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
