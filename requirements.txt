@@ -4,3 +4,5 @@ numpy
 requests
 aiohttp
 python-dotenv
+fastapi
+uvicorn
