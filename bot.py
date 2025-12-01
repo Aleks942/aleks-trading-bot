@@ -4,27 +4,25 @@ import asyncio
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, Update
 
 from core.analyzer import analyze_symbol
 
-
-# -----------------------------
+# -------------------------------------------------
 # 1. Настройки и инициализация
-# -----------------------------
+# -------------------------------------------------
 
 TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+CHAT_ID = int(os.getenv("CHAT_ID"))
 
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-
-# -----------------------------
+# -------------------------------------------------
 # 2. Команда /start
-# -----------------------------
+# -------------------------------------------------
 
 @router.message(Command("start"))
 async def start_cmd(message: Message):
@@ -34,10 +32,9 @@ async def start_cmd(message: Message):
         "/signal BTCUSDT 1h"
     )
 
-
-# -----------------------------
+# -------------------------------------------------
 # 3. Команда /signal
-# -----------------------------
+# -------------------------------------------------
 
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
@@ -45,7 +42,7 @@ async def signal_cmd(message: Message):
         parts = message.text.split()
         symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
         tf = parts[2] if len(parts) > 2 else "1h"
-    except:
+    except Exception:
         await message.answer("Неверный формат. Пример: /signal BTCUSDT 1h")
         return
 
@@ -66,10 +63,9 @@ async def signal_cmd(message: Message):
 
     await message.answer(text)
 
-
-# -------------------------------------
+# -------------------------------------------------
 # 4. Автозадача (периодические сигналы)
-# -------------------------------------
+# -------------------------------------------------
 
 async def periodic_task():
     while True:
@@ -87,42 +83,44 @@ async def periodic_task():
         except Exception as e:
             print("Ошибка в авто-задаче:", e)
 
-        await asyncio.sleep(60)  # отправка каждые 60 сек
+        # раз в 60 секунд (можешь потом поменять)
+        await asyncio.sleep(60)
 
-
-# -----------------------------
+# -------------------------------------------------
 # 5. Webhook + FastAPI (Render)
-# -----------------------------
+# -------------------------------------------------
 
 from fastapi import FastAPI, Request
 import uvicorn
 
 app = FastAPI()
 
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # https://aleks-trading-bot.onrender.com
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
 
-
 @app.on_event("startup")
 async def on_startup():
-    # Запускаем фоновую таску
+    # запускаем фоновую авто-задачу
     asyncio.create_task(periodic_task())
-
-    # Устанавливаем webhook
+    # устанавливаем webhook для Telegram
     await bot.set_webhook(WEBHOOK_URL)
-
 
 @app.post(WEBHOOK_PATH)
 async def webhook_handler(request: Request):
+    """
+    Telegram шлёт сюда апдейты.
+    Мы превращаем JSON в объект Update и
+    отдаём его в Dispatcher, чтобы сработали /start и /signal.
+    """
     data = await request.json()
-    await bot.send_message(CHAT_ID, str(data))
+    update = Update(**data)
+    await dp.feed_update(bot, update)
     return {"status": "ok"}
 
-
-# -----------------------------
-# 6. Запуск сервера
-# -----------------------------
+# -------------------------------------------------
+# 6. Запуск сервера (для Docker / Render)
+# -------------------------------------------------
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
