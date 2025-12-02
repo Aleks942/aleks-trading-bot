@@ -1,51 +1,32 @@
 import pandas as pd
-import numpy as np
 
-
-def atr(df, period=14):
-    """ATR — волатильность рынка."""
-    high_low = df.high - df.low
-    high_close = np.abs(df.high - df.close.shift())
-    low_close = np.abs(df.low - df.close.shift())
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-    return true_range.rolling(period).mean()
-
-
-def market_phase(df):
+def detect_market_phase(df):
     """
-    Возвращает фазу рынка:
-    - consolidation  (флэт)
-    - expansion      (начало движения)
-    - trend_up       (тренд вверх)
-    - trend_down     (тренд вниз)
-    - exhaustion     (перегрев)
+    Определяем фазу рынка:
+    - uptrend
+    - downtrend
+    - accumulation
+    - distribution
     """
 
-    close = df.close
-    ma_fast = close.rolling(20).mean()
-    ma_slow = close.rolling(50).mean()
+    close = df["close"]
 
-    atr_val = atr(df)
+    # Скользящие средние
+    sma20 = close.rolling(20).mean()
+    sma50 = close.rolling(50).mean()
 
-    # ФЛЭТ
-    if atr_val.iloc[-1] < atr_val.mean() * 0.7:
-        return "consolidation"
+    last = len(close) - 1
 
-    # НАЧАЛО ДВИЖЕНИЯ
-    if atr_val.iloc[-1] > atr_val.mean() * 1.2:
-        return "expansion"
+    # Тренд вверх
+    if sma20.iloc[last] > sma50.iloc[last]:
+        return "uptrend"
 
-    # ТРЕНД ВВЕРХ
-    if ma_fast.iloc[-1] > ma_slow.iloc[-1]:
-        return "trend_up"
+    # Тренд вниз
+    if sma20.iloc[last] < sma50.iloc[last]:
+        return "downtrend"
 
-    # ТРЕНД ВНИЗ
-    if ma_fast.iloc[-1] < ma_slow.iloc[-1]:
-        return "trend_down"
+    # Боковик / накопление
+    if abs(sma20.iloc[last] - sma50.iloc[last]) / close.iloc[last] < 0.01:
+        return "accumulation"
 
-    # ПЕРЕГРЕВ
-    if abs(close.iloc[-1] - ma_fast.iloc[-1]) > atr_val.iloc[-1] * 2:
-        return "exhaustion"
-
-    return "consolidation"
+    return "distribution"
