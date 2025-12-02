@@ -2,7 +2,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-import asyncio
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
@@ -10,7 +9,6 @@ from aiogram.types import Message, Update
 from aiogram.client.default import DefaultBotProperties
 
 from fastapi import FastAPI, Request
-import uvicorn
 
 from core.analyzer import analyze_symbol
 
@@ -20,7 +18,7 @@ from core.analyzer import analyze_symbol
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://.../webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBHOOK_PATH = "/webhook"
 
 bot = Bot(
@@ -72,24 +70,23 @@ async def signal_cmd(message: Message):
 
 
 # -------------------------------------------------
-# 3. FastAPI приложение
+# 3. FASTAPI ПРИЛОЖЕНИЕ
 # -------------------------------------------------
 
 app = FastAPI()
-
 
 @app.on_event("startup")
 async def on_startup():
     print("[DEBUG] Запуск бота")
     print("[DEBUG] WEBHOOK_URL:", WEBHOOK_URL)
 
-    # 1. Запуск dispatcher
+    # ВАЖНО: запускаем Dispatcher
     await dp.startup(bot)
 
-    # 2. Установка вебхука
+    # Устанавливаем вебхук
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
-        print("[DEBUG] Webhook установлен:", WEBHOOK_URL)
+        print("[DEBUG] Webhook установлен")
 
 
 @app.on_event("shutdown")
@@ -100,21 +97,17 @@ async def on_shutdown():
 
 
 # -------------------------------------------------
-# 4. Маршрут вебхука
+# 4. ОБРАБОТЧИК ВЕБХУКА
 # -------------------------------------------------
 
 @app.post(WEBHOOK_PATH)
-async def webhook(request: Request):
+async def telegram_webhook(request: Request):
     data = await request.json()
     update = Update(**data)
     await dp.feed_update(bot, update)
     return {"ok": True}
 
-
 # -------------------------------------------------
-# 5. Запуск локальный (Railway использует Procfile)
+# 5. БОЛЬШЕ НЕТ uvicorn.run — ЗАПУСКАЕМСЯ ЧЕРЕЗ PROCFILE
 # -------------------------------------------------
 
-if __name__ == "__main__":
-    PORT = int(os.getenv("PORT", 8080))
-    uvicorn.run("bot:app", host="0.0.0.0", port=PORT, reload=False)
