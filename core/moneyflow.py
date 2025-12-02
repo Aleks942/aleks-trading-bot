@@ -84,3 +84,35 @@ def moneyflow_signal(df):
         return "weak_sell"
 
     return "neutral"
+def analyze_moneyflow(df):
+    """
+    Унифицированный анализ денежного потока для analyzer.py.
+    Возвращает направление:
+    - "in"  — капитал входит
+    - "out" — капитал выходит
+    - "neutral"
+    """
+
+    try:
+        mfi_val = mfi(df).iloc[-1]
+        vwap_val = vwap(df).iloc[-1]
+        price = df.close.iloc[-1]
+        mp = money_pressure(df)  # positive / negative / neutral
+        signal = moneyflow_signal(df)
+
+        # Логика направления потока
+        if mp == "positive" or mfi_val > 55:
+            direction = "in"
+        elif mp == "negative" or mfi_val < 45:
+            direction = "out"
+        else:
+            direction = "neutral"
+
+        return {
+            "direction": direction,
+            "mfi": float(mfi_val),
+            "price_vs_vwap": "above" if price > vwap_val else "below",
+            "signal": signal
+        }
+    except Exception as e:
+        return {"direction": "neutral", "error": str(e)}
