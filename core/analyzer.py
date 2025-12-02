@@ -1,16 +1,17 @@
-from core.datasource import get_price_data
+from core.datasource import get_ohlcv
 from core.indicators import calculate_indicators
 from core.divergence import detect_divergence
 from core.moneyflow import analyze_moneyflow
 from core.phases import detect_market_phase
 from core.volatility import analyze_volatility
 
+
 def analyze_symbol(symbol: str, tf: str):
     try:
-        # 1. Получаем данные
-        df = get_price_data(symbol, tf)
-        if df is None or len(df) < 50:
-            return {"error": "Недостаточно данных для анализа"}
+        # 1. Получаем данные с бирж
+        df = get_ohlcv(symbol, tf)
+        if df is None or len(df) < 30:
+            return {"error": "Недостаточно данных"}
 
         # 2. Индикаторы
         indi = calculate_indicators(df)
@@ -27,9 +28,10 @@ def analyze_symbol(symbol: str, tf: str):
         # 6. Волатильность
         vola = analyze_volatility(df)
 
+        # Сбор причин
         reasons = []
 
-        # Индикаторы
+        # Тренд
         if indi.get("trend") == "up":
             reasons.append("Тренд: восходящий (индикаторы)")
         elif indi.get("trend") == "down":
@@ -43,19 +45,19 @@ def analyze_symbol(symbol: str, tf: str):
         if div.get("bearish"):
             reasons.append("Медвежья дивергенция")
 
-        # Денежный поток
+        # Поток капитала
         if mf.get("moneyflow") == "in":
-            reasons.append("Поток капитала: входит")
+            reasons.append("Поток капитала входит")
         else:
-            reasons.append("Поток капитала: выходит")
+            reasons.append("Поток капитала выходит")
 
-        # Фаза рынка
+        # Фаза
         reasons.append(f"Фаза рынка: {phase.get('phase')}")
 
         # Волатильность
         reasons.append(f"Волатильность: {vola.get('volatility')}")
 
-        # Итоговый сигнал
+        # Итоговый балл
         score = 0
         if indi.get("trend") == "up": score += 1
         if div.get("bullish"): score += 1
@@ -82,4 +84,3 @@ def analyze_symbol(symbol: str, tf: str):
 
     except Exception as e:
         return {"error": str(e)}
-
