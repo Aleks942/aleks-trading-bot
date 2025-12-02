@@ -145,4 +145,37 @@ def supertrend(df, period=10, multiplier=3):
         else:
             st.append(st[i-1])
     return pd.Series(st)
+# ---------------------------------------------------------
+# 13. Unified indicator analysis for analyzer.py
+# ---------------------------------------------------------
+
+def calculate_indicators(df):
+    close = df["close"]
+
+    # MA Trend
+    ema20 = ema(close, 20)
+    ema50 = ema(close, 50)
+
+    if ema20.iloc[-1] > ema50.iloc[-1]:
+        trend = "up"
+    elif ema20.iloc[-1] < ema50.iloc[-1]:
+        trend = "down"
+    else:
+        trend = "sideways"
+
+    # MACD
+    macd_line, signal_line, histogram = macd(close)
+
+    # RSI
+    rsi_value = rsi(close).iloc[-1]
+
+    # Supertrend
+    st = supertrend(df).iloc[-1]
+
+    return {
+        "trend": trend,
+        "macd_hist": float(histogram.iloc[-1]),
+        "rsi": float(rsi_value),
+        "supertrend": float(st)
+    }
 
