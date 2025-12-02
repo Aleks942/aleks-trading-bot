@@ -1,57 +1,30 @@
-import numpy as np
 import pandas as pd
 
+def calculate_volatility(df, period=20):
+    """Обычная историческая волатильность"""
+    returns = df['close'].pct_change()
+    vol = returns.rolling(period).std() * (len(df) ** 0.5)
+    return vol
 
-def atr(df, period=14):
-    high_low = df['high'] - df['low']
-    high_close = np.abs(df['high'] - df['close'].shift())
-    low_close = np.abs(df['low'] - df['close'].shift())
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-    return true_range.rolling(period).mean()
+def detect_volatility_zone(vol):
+    """Определение зоны волатильности"""
 
+    last = vol.iloc[-1]
 
-def volatility_state(df):
-    """
-    Определяет состояние волатильности:
-    - low      -> рынок сжат (готовится к импульсу)
-    - medium   -> нормальная волатильность
-    - high     -> рынок опасен, широкие свечи
-    - extreme  -> хаос, лучше не торговать
-    """
+    if last > vol.mean() * 1.5:
+        return "high"        # высокая волатильность
+    if last < vol.mean() * 0.7:
+        return "low"         # низкая волатильность
 
-    atr_val = atr(df)
-    last_atr = atr_val.iloc[-1]
-    avg_atr = atr_val.mean()
+    return "normal"          # средняя волатильность
 
-    if last_atr < avg_atr * 0.7:
-        return "low"         # сжатие → скоро импульс
+def analyze_volatility(df):
+    """Основная функция, которую импортирует analyzer.py"""
 
-    if last_atr < avg_atr * 1.2:
-        return "medium"      # нормальный рынок
+    vol = calculate_volatility(df)
 
-    if last_atr < avg_atr * 2:
-        return "high"        # усиление волатильности
+    return {
+        "volatility_value": float(vol.iloc[-1]),
+        "zone": detect_volatility_zone(vol)
+    }
 
-    return "extreme"         # хаос → НЕ входить
-
-
-def volatility_expansion(df):
-    """
-    Определяет момент начала расширения (импульса).
-    """
-
-    atr_val = atr(df)
-    if atr_val.iloc[-1] > atr_val.iloc[-2] * 1.2:
-        return True  # резкое расширение диапазона
-    return False
-
-
-def safe_stop_range(df):
-    """
-    Рассчитывает безопасный диапазон стопа.
-    """
-
-    a = atr(df)
-    stop = a.iloc[-1] * 1.5   # рекомендованный диапазон
-    return stop
