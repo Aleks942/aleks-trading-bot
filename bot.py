@@ -4,6 +4,7 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message, Update
+from aiogram.client.default import DefaultBotProperties
 
 from fastapi import FastAPI, Request
 import uvicorn
@@ -16,11 +17,15 @@ from core.analyzer import analyze_symbol
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")     # https://....railway.app/webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBHOOK_PATH = "/webhook"
 
-# Инициализация aiogram
-bot = Bot(token=TOKEN, default=ParseMode.HTML)
+# Aiogram 3: правильная инициализация бота
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
@@ -67,7 +72,7 @@ async def signal_cmd(message: Message):
     await message.answer(text)
 
 # -------------------------------------------------
-# 4. Автосигналы (каждые 60 сек)
+# 4. Автосигналы
 # -------------------------------------------------
 
 async def periodic_task():
@@ -95,19 +100,16 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    print(f"[DEBUG] Starting bot with webhook: {WEBHOOK_URL}")
+    print(f"[DEBUG] Launch with webhook: {WEBHOOK_URL}")
 
-    # Запустить авто-таск
     asyncio.create_task(periodic_task())
 
-    # Установить вебхук — критично!
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
         print("[DEBUG] Webhook установлен")
     else:
-        print("ERROR: WEBHOOK_URL не установлен!")
+        print("ERROR: WEBHOOK_URL не установлен")
 
-# Приём webhook от Telegram
 @app.post(WEBHOOK_PATH)
 async def webhook_handler(request: Request):
     data = await request.json()
@@ -116,7 +118,7 @@ async def webhook_handler(request: Request):
     return {"status": "ok"}
 
 # -------------------------------------------------
-# 6. Запуск (Railway)
+# 6. Uvicorn (Railway)
 # -------------------------------------------------
 
 if __name__ == "__main__":
