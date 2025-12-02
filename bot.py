@@ -1,4 +1,7 @@
-import os
+import os 
+from dotenv import load_dotenv
+load_dotenv()
+
 import asyncio
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
