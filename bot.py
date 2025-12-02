@@ -42,16 +42,12 @@ async def start_cmd(message: Message):
         "/signal BTCUSDT 1h"
     )
 
-
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
-    try:
-        parts = message.text.split()
-        symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
-        tf = parts[2] if len(parts) > 2 else "1h"
-    except Exception:
-        await message.answer("Формат: /signal BTCUSDT 1h")
-        return
+    parts = message.text.split()
+
+    symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
+    tf = parts[2] if len(parts) > 2 else "1h"
 
     data = analyze_symbol(symbol, tf)
 
@@ -68,7 +64,6 @@ async def signal_cmd(message: Message):
     )
     await message.answer(text)
 
-
 # -------------------------------------------------
 # FastAPI
 # -------------------------------------------------
@@ -80,26 +75,21 @@ async def on_startup():
     print("[DEBUG] Запуск бота")
     print("[DEBUG] WEBHOOK_URL:", WEBHOOK_URL)
 
-    # 1. Запуск dp (без bot)
-    await dp.startup()
-
-    # 2. Установка вебхука
+    # Устанавливаем webhook
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
         print("[DEBUG] Webhook установлен")
-
 
 @app.on_event("shutdown")
 async def on_shutdown():
     print("[DEBUG] Остановка бота")
     await bot.delete_webhook()
-    await dp.shutdown()
     await bot.session.close()
 
-
 @app.post(WEBHOOK_PATH)
-async def telegram_webhook(request: Request):
+async def webhook(request: Request):
     data = await request.json()
     update = Update(**data)
     await dp.feed_update(bot, update)
     return {"ok": True}
+
