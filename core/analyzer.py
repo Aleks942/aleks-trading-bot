@@ -1,108 +1,85 @@
-import pandas as pd
-from core.datasource import get_ohlcv
-from core.indicators import (
-    rsi, ema, macd, stochastic, bollinger,
-    atr, adx, vwap, obv, momentum, roc, supertrend
-)
+from core.datasource import get_price_data
+from core.indicators import calculate_indicators
+from core.divergence import detect_divergence
+from core.moneyflow import analyze_moneyflow
+from core.phases import detect_market_phase
+from core.volatility import analyze_volatility
 
-def analyze_symbol(symbol: str = "BTCUSDT", timeframe: str = "1h"):
+def analyze_symbol(symbol: str, tf: str):
+    try:
+        # 1. Получаем данные
+        df = get_price_data(symbol, tf)
+        if df is None or len(df) < 50:
+            return {"error": "Недостаточно данных для анализа"}
 
-    # Загружаем свечи
-    df = get_ohlcv(symbol, timeframe)
+        # 2. Индикаторы
+        indi = calculate_indicators(df)
 
-    # БЕЗОПАСНАЯ ЗАЩИТА (исправляет ошибку Length Mismatch)
-    if df is None or df.empty or len(df) < 60:
+        # 3. Дивергенции
+        div = detect_divergence(df)
+
+        # 4. Денежный поток
+        mf = analyze_moneyflow(df)
+
+        # 5. Фаза рынка
+        phase = detect_market_phase(df)
+
+        # 6. Волатильность
+        vola = analyze_volatility(df)
+
+        reasons = []
+
+        # Индикаторы
+        if indi.get("trend") == "up":
+            reasons.append("Тренд: восходящий (индикаторы)")
+        elif indi.get("trend") == "down":
+            reasons.append("Тренд: нисходящий (индикаторы)")
+        else:
+            reasons.append("Тренд: боковой")
+
+        # Дивергенции
+        if div.get("bullish"):
+            reasons.append("Бычья дивергенция")
+        if div.get("bearish"):
+            reasons.append("Медвежья дивергенция")
+
+        # Денежный поток
+        if mf.get("moneyflow") == "in":
+            reasons.append("Поток капитала: входит")
+        else:
+            reasons.append("Поток капитала: выходит")
+
+        # Фаза рынка
+        reasons.append(f"Фаза рынка: {phase.get('phase')}")
+
+        # Волатильность
+        reasons.append(f"Волатильность: {vola.get('volatility')}")
+
+        # Итоговый сигнал
+        score = 0
+        if indi.get("trend") == "up": score += 1
+        if div.get("bullish"): score += 1
+        if mf.get("moneyflow") == "in": score += 1
+
+        if indi.get("trend") == "down": score -= 1
+        if div.get("bearish"): score -= 1
+        if mf.get("moneyflow") == "out": score -= 1
+
+        if score >= 2:
+            signal = "LONG"
+        elif score <= -2:
+            signal = "SHORT"
+        else:
+            signal = "NEUTRAL"
+
+        strength = abs(score)
+
         return {
-            "error": "Недостаточно данных",
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "signal": "NEUTRAL",
-            "strength": 0,
-            "reasons": ["Нет или мало данных (меньше 60 свечей)"]
+            "signal": signal,
+            "strength": strength,
+            "reasons": reasons
         }
 
-    # Индикаторы
-    df["rsi"] = rsi(df["close"])
-    df["ema20"] = ema(df["close"], 20)
-    df["ema50"] = ema(df["close"], 50)
-
-    macd_line, signal_line, hist = macd(df["close"])
-    df["macd_hist"] = hist
-
-    df["stoch_k"], df["stoch_d"] = stochastic(df)
-    df["middle_bb"], df["upper_bb"], df["lower_bb"] = bollinger(df["close"])
-    df["atr"] = atr(df, 14)
-    df["adx"] = adx(df, 14)
-    df["vwap"] = vwap(df)
-    df["obv"] = obv(df)
-    df["momentum"] = momentum(df["close"], 10)
-    df["roc"] = roc(df["close"], 12)
-    df["supertrend"] = supertrend(df)
-
-    last = df.iloc[-1]
-    score = 0
-    reasons = []
-
-    # RSI
-    if last["rsi"] < 30:
-        score += 2
-        reasons.append("RSI перепродан (лонг)")
-    elif last["rsi"] > 70:
-        score -= 2
-        reasons.append("RSI перекуплен (шорт)")
-
-    # EMA-тренд
-    if last["ema20"] > last["ema50"]:
-        score += 1
-        reasons.append("EMA20 выше EMA50 (лонг)")
-    else:
-        score -= 1
-        reasons.append("EMA20 ниже EMA50 (шорт)")
-
-    # MACD
-    if last["macd_hist"] > 0:
-        score += 1
-        reasons.append("MACD бычий")
-    else:
-        score -= 1
-        reasons.append("MACD медвежий")
-
-    # Supertrend
-    if last["close"] > last["supertrend"]:
-        score += 2
-        reasons.append("Цена выше SuperTrend (лонг)")
-    else:
-        score -= 2
-        reasons.append("Цена ниже SuperTrend (шорт)")
-
-    # ADX
-    if last["adx"] > 25:
-        reasons.append("Сильный тренд (ADX > 25)")
-
-    # OBV
-    if len(df) >= 5:
-        if last["obv"] > df["obv"].iloc[-5]:
-            score += 1
-            reasons.append("Рост объёмов (OBV)")
-        else:
-            reasons.append("OBV не растёт")
-    else:
-        reasons.append("Недостаточно данных для OBV")
-
-    # Итоговый сигнал
-    if score >= 3:
-        signal = "LONG"
-    elif score <= -3:
-        signal = "SHORT"
-    else:
-        signal = "NEUTRAL"
-
-    # Финальный ответ
-    return {
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "signal": signal,
-        "strength": score,
-        "reasons": reasons
-    }
+    except Exception as e:
+        return {"error": str(e)}
 
