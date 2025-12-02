@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from core.analyzer import analyze_symbol
 
 # -------------------------------------------------
-# 1. Настройки
+# Конфигурация
 # -------------------------------------------------
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -31,7 +31,7 @@ router = Router()
 dp.include_router(router)
 
 # -------------------------------------------------
-# 2. Команды
+# Команды
 # -------------------------------------------------
 
 @router.message(Command("start"))
@@ -70,7 +70,7 @@ async def signal_cmd(message: Message):
 
 
 # -------------------------------------------------
-# 3. FASTAPI ПРИЛОЖЕНИЕ
+# FastAPI
 # -------------------------------------------------
 
 app = FastAPI()
@@ -80,10 +80,10 @@ async def on_startup():
     print("[DEBUG] Запуск бота")
     print("[DEBUG] WEBHOOK_URL:", WEBHOOK_URL)
 
-    # ВАЖНО: запускаем Dispatcher
-    await dp.startup(bot)
+    # 1. Запуск dp (без bot)
+    await dp.startup()
 
-    # Устанавливаем вебхук
+    # 2. Установка вебхука
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
         print("[DEBUG] Webhook установлен")
@@ -92,13 +92,10 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     print("[DEBUG] Остановка бота")
+    await bot.delete_webhook()
     await dp.shutdown()
     await bot.session.close()
 
-
-# -------------------------------------------------
-# 4. ОБРАБОТЧИК ВЕБХУКА
-# -------------------------------------------------
 
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
@@ -106,8 +103,3 @@ async def telegram_webhook(request: Request):
     update = Update(**data)
     await dp.feed_update(bot, update)
     return {"ok": True}
-
-# -------------------------------------------------
-# 5. БОЛЬШЕ НЕТ uvicorn.run — ЗАПУСКАЕМСЯ ЧЕРЕЗ PROCFILE
-# -------------------------------------------------
-
