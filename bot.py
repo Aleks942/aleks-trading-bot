@@ -1,4 +1,4 @@
-import os 
+import os
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -14,9 +14,13 @@ import uvicorn
 
 from core.analyzer import analyze_symbol
 
+# -------------------------------------------------
+# 1. Настройки
+# -------------------------------------------------
+
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://.../webhook
 WEBHOOK_PATH = "/webhook"
 
 bot = Bot(
@@ -28,6 +32,10 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
+# -------------------------------------------------
+# 2. Команды
+# -------------------------------------------------
+
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
@@ -35,6 +43,7 @@ async def start_cmd(message: Message):
         "Доступные команды:\n"
         "/signal BTCUSDT 1h"
     )
+
 
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
@@ -61,14 +70,38 @@ async def signal_cmd(message: Message):
     )
     await message.answer(text)
 
+
+# -------------------------------------------------
+# 3. FastAPI приложение
+# -------------------------------------------------
+
 app = FastAPI()
+
 
 @app.on_event("startup")
 async def on_startup():
-    print("[DEBUG] Webhook:", WEBHOOK_URL)
+    print("[DEBUG] Запуск бота")
+    print("[DEBUG] WEBHOOK_URL:", WEBHOOK_URL)
+
+    # 1. Запуск dispatcher
+    await dp.startup(bot)
+
+    # 2. Установка вебхука
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
-        print("[DEBUG] Webhook установлен")
+        print("[DEBUG] Webhook установлен:", WEBHOOK_URL)
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    print("[DEBUG] Остановка бота")
+    await dp.shutdown()
+    await bot.session.close()
+
+
+# -------------------------------------------------
+# 4. Маршрут вебхука
+# -------------------------------------------------
 
 @app.post(WEBHOOK_PATH)
 async def webhook(request: Request):
@@ -76,6 +109,11 @@ async def webhook(request: Request):
     update = Update(**data)
     await dp.feed_update(bot, update)
     return {"ok": True}
+
+
+# -------------------------------------------------
+# 5. Запуск локальный (Railway использует Procfile)
+# -------------------------------------------------
 
 if __name__ == "__main__":
     PORT = int(os.getenv("PORT", 8080))
