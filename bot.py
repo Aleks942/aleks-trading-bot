@@ -16,16 +16,17 @@ from core.analyzer import analyze_symbol
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # ДОЛЖНО быть: https://aleks-trading-bot.onrender.com/webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")     # https://....railway.app/webhook
 WEBHOOK_PATH = "/webhook"
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+# Инициализация aiogram
+bot = Bot(token=TOKEN, default=ParseMode.HTML)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
 # -------------------------------------------------
-# 2. /start
+# 2. Команда /start
 # -------------------------------------------------
 
 @router.message(Command("start"))
@@ -37,7 +38,7 @@ async def start_cmd(message: Message):
     )
 
 # -------------------------------------------------
-# 3. /signal
+# 3. Команда /signal
 # -------------------------------------------------
 
 @router.message(Command("signal"))
@@ -61,8 +62,7 @@ async def signal_cmd(message: Message):
         f"TF: <b>{tf}</b>\n\n"
         f"Направление: <b>{data['signal']}</b>\n"
         f"Сила: <b>{data['strength']}</b>\n\n"
-        "<b>Причины:</b>\n"
-        + "\n".join(f"- {r}" for r in data["reasons"])
+        "<b>Причины:</b>\n" + "\n".join(f"- {r}" for r in data["reasons"])
     )
     await message.answer(text)
 
@@ -74,17 +74,14 @@ async def periodic_task():
     while True:
         try:
             data = analyze_symbol("BTCUSDT", "1h")
-
             if "error" not in data:
                 text = (
                     "<b>Авто-сигнал (BTCUSDT 1h)</b>\n\n"
                     f"Направление: <b>{data['signal']}</b>\n"
                     f"Сила: <b>{data['strength']}</b>\n\n"
-                    "<b>Причины:</b>\n"
-                    + "\n".join(f"- {r}" for r in data["reasons"])
+                    "<b>Причины:</b>\n" + "\n".join(f"- {r}" for r in data["reasons"])
                 )
                 await bot.send_message(CHAT_ID, text)
-
         except Exception as e:
             print("Ошибка в авто-задаче:", e)
 
@@ -98,15 +95,19 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    print(f"[DEBUG] Setting webhook: {WEBHOOK_URL}")
+    print(f"[DEBUG] Starting bot with webhook: {WEBHOOK_URL}")
 
+    # Запустить авто-таск
     asyncio.create_task(periodic_task())
 
+    # Установить вебхук — критично!
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
+        print("[DEBUG] Webhook установлен")
     else:
-        print("ERROR: Переменная WEBHOOK_URL не установлена.")
+        print("ERROR: WEBHOOK_URL не установлен!")
 
+# Приём webhook от Telegram
 @app.post(WEBHOOK_PATH)
 async def webhook_handler(request: Request):
     data = await request.json()
@@ -115,10 +116,10 @@ async def webhook_handler(request: Request):
     return {"status": "ok"}
 
 # -------------------------------------------------
-# 6. Запуск (Render)
+# 6. Запуск (Railway)
 # -------------------------------------------------
 
 if __name__ == "__main__":
-    PORT = int(os.getenv("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    PORT = int(os.getenv("PORT", 8080))
+    uvicorn.run("bot:app", host="0.0.0.0", port=PORT, reload=False)
 
