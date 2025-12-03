@@ -37,7 +37,7 @@ SYMBOL_MAP = {
     "ETHUSDT": "ethereum"
 }
 
-def get_ohlcv(symbol="BTCUSDT", tf="1h"):
+def get_ohlcv(symbol="BTCUSDT"):
     coin = SYMBOL_MAP.get(symbol.upper())
     if not coin:
         print("UNKNOWN SYMBOL:", symbol)
@@ -46,7 +46,7 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
     url = f"{PROXY_BASE}/?symbol={coin}&days=2"
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "User-Agent": "Mozilla/5.0",
         "Accept": "application/json"
     }
 
@@ -71,18 +71,14 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
         return None
 
     if "prices" not in data or "total_volumes" not in data:
-        print("BAD PROXY DATA:", data)
+        print("BAD PROXY DATA STRUCTURE")
         return None
 
     try:
-        prices = data["prices"]
-        volumes = data["total_volumes"]
-
         df = pd.DataFrame({
-            "close": [p[1] for p in prices],
-            "volume": [v[1] for v in volumes]
+            "close": [p[1] for p in data["prices"]],
+            "volume": [v[1] for v in data["total_volumes"]]
         })
-
         return df
 
     except Exception as e:
@@ -90,8 +86,9 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
         return None
 
 # ================== ANALYSIS ======================
-def analyze_symbol(symbol="BTCUSDT", tf="1h"):
-    df = get_ohlcv(symbol, tf)
+def analyze_symbol(symbol="BTCUSDT"):
+    df = get_ohlcv(symbol)
+
     if df is None or len(df) < 50:
         return {"error": "no data"}
 
@@ -100,6 +97,7 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
 
     ema20 = close.ewm(span=20).mean().iloc[-1]
     ema50 = close.ewm(span=50).mean().iloc[-1]
+
     trend = "up" if ema20 > ema50 else "down"
 
     delta = close.diff()
@@ -108,6 +106,7 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
 
     avg_gain = gain.rolling(14).mean()
     avg_loss = loss.rolling(14).mean()
+
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     rsi = rsi.iloc[-1]
@@ -126,3 +125,80 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
         score += 1
         reasons.append("Тренд восходящий")
     else:
+        score -= 1
+        reasons.append("Тренд нисходящий")
+
+    if macd_hist > 0:
+        score += 1
+        reasons.append("MACD бычий")
+    else:
+        score -= 1
+        reasons.append("MACD медвежий")
+
+    if rsi > 55:
+        score += 1
+        reasons.append("RSI выше 55")
+    elif rsi < 45:
+        score -= 1
+        reasons.append("RSI ниже 45")
+    else:
+        reasons.append("RSI нейтрален")
+
+    if volume_ratio > 1.2:
+        score += 1
+        reasons.append("Объём выше среднего")
+
+    if score >= 3:
+        signal = "LONG"
+    elif score <= -3:
+        signal = "SHORT"
+    else:
+        signal = "NEUTRAL"
+
+    return {
+        "signal": signal,
+        "strength": abs(score),
+        "reasons": reasons
+    }
+
+# ================== COMMANDS ======================
+@router.message(Command("start"))
+async def start_cmd(message: Message):
+    await message.answer("✅ Бот онлайн\nКоманда:\n/signal BTCUSDT")
+
+@router.message(Command("signal"))
+async def signal_cmd(message: Message):
+    parts = message.text.split()
+    symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
+
+    data = analyze_symbol(symbol)
+
+    if "error" in data:
+        await message.answer("❌ Нет данных")
+        return
+
+    text = (
+        f"<b>Сигнал {symbol}</b>\n\n"
+        f"Направление: <b>{data['signal']}</b>\n"
+        f"Сила: <b>{data['strength']}</b>\n\n"
+        "Причины:\n" + "\n".join(f"- {r}" for r in data["reasons"])
+    )
+
+    await message.answer(text)
+
+# ================== AUTO LOOP ======================
+async def auto_loop():
+    print("AUTO LOOP STARTED ✅")
+    symbols = ["BTCUSDT", "ETHUSDT"]
+    min_strength = 3
+    last_sent = {}
+
+    while True:
+        try:
+            for symbol in symbols:
+                data = analyze_symbol(symbol)
+
+                if "error" in data:
+                    continue
+
+                if data["strength"] < min_strength:
