@@ -2,9 +2,7 @@ import os
 import asyncio
 import requests
 import pandas as pd
-
 from dotenv import load_dotenv
-load_dotenv()
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
@@ -15,6 +13,8 @@ from aiogram.client.default import DefaultBotProperties
 from fastapi import FastAPI, Request
 
 # ================== ENV ==================
+
+load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
@@ -35,11 +35,12 @@ dp.include_router(router)
 # ================== DATA ==================
 
 def get_ohlcv(symbol="BTCUSDT", tf="1h"):
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": tf, "limit": 200}
-
     try:
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": symbol, "interval": tf, "limit": 200},
+            timeout=10
+        )
         data = r.json()
     except Exception as e:
         print("OHLCV REQUEST ERROR:", e)
@@ -54,11 +55,9 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
             "time","open","high","low","close","volume",
             "_","_","_","_","_","_"
         ])
-
         df["close"] = df["close"].astype(float)
         df["volume"] = df["volume"].astype(float)
         return df
-
     except Exception as e:
         print("DF PARSE ERROR:", e)
         return None
@@ -77,7 +76,6 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     ema50 = close.ewm(span=50).mean().iloc[-1]
     trend = "up" if ema20 > ema50 else "down"
 
-    # ✅ НОРМАЛЬНЫЙ RSI
     delta = close.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
@@ -142,9 +140,7 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
 
 @router.message(Command("start"))
 async def start_cmd(message: Message):
-    await message.answer(
-        "✅ Бот онлайн\nКоманды:\n/signal BTCUSDT 1h"
-    )
+    await message.answer("✅ Бот онлайн\nКоманды:\n/signal BTCUSDT 1h")
 
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
@@ -170,6 +166,8 @@ async def signal_cmd(message: Message):
 # ================== AUTO LOOP ==================
 
 async def auto_signal_loop():
+    print("AUTO LOOP STARTED ✅")
+
     symbols = ["BTCUSDT", "ETHUSDT"]
     tf = "1h"
     htf = "4h"
@@ -178,13 +176,12 @@ async def auto_signal_loop():
     last_sent = {}
 
     while True:
+        print("AUTO LOOP TICK...")
+
         try:
             for symbol in symbols:
                 ltf = analyze_symbol(symbol, tf)
                 htf_data = analyze_symbol(symbol, htf)
-
-                if not ltf or not htf_data:
-                    continue
 
                 if "error" in ltf or "error" in htf_data:
                     continue
@@ -212,12 +209,13 @@ async def auto_signal_loop():
                     "\n".join(f"- {r}" for r in ltf["reasons"])
                 )
 
+                print("SEND:", symbol, ltf["signal"])
                 await bot.send_message(CHAT_ID, text)
 
             await asyncio.sleep(900)
 
         except Exception as e:
-            print("AUTO ERROR:", e)
+            print("AUTO LOOP ERROR:", e)
             await asyncio.sleep(30)
 
 # ================== FASTAPI ==================
@@ -226,15 +224,21 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    print("STARTUP OK")
+    print("STARTUP OK ✅")
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(WEBHOOK_URL)
+        print("WEBHOOK SET ✅")
     except Exception as e:
         print("WEBHOOK ERROR:", e)
 
     asyncio.create_task(auto_signal_loop())
+
+    try:
+        await bot.send_message(CHAT_ID, "✅ Бот запущен. Автосигналы активны.")
+    except Exception as e:
+        print("START MESSAGE ERROR:", e)
 
 @app.on_event("shutdown")
 async def on_shutdown():
