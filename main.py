@@ -4,7 +4,6 @@ import requests
 import pandas as pd
 from dotenv import load_dotenv
 
-
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
