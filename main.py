@@ -45,9 +45,27 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
 
     url = f"{PROXY_BASE}/?symbol={coin}&days=2"
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json"
+    }
+
     try:
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, headers=headers, timeout=20)
+
+        if r.status_code != 200:
+            print("PROXY HTTP STATUS:", r.status_code)
+            print("PROXY RAW:", r.text[:200])
+            return None
+
+        raw = r.text.strip()
+
+        if not raw.startswith("{"):
+            print("PROXY NOT JSON:", raw[:200])
+            return None
+
         data = r.json()
+
     except Exception as e:
         print("PROXY REQUEST ERROR:", e)
         return None
@@ -108,133 +126,3 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
         score += 1
         reasons.append("Тренд восходящий")
     else:
-        score -= 1
-        reasons.append("Тренд нисходящий")
-
-    if macd_hist > 0:
-        score += 1
-        reasons.append("MACD бычий")
-    else:
-        score -= 1
-        reasons.append("MACD медвежий")
-
-    if rsi > 55:
-        score += 1
-        reasons.append("RSI выше 55")
-    elif rsi < 45:
-        score -= 1
-        reasons.append("RSI ниже 45")
-    else:
-        reasons.append("RSI нейтрален")
-
-    if volume_ratio > 1.2:
-        score += 1
-        reasons.append("Объём выше среднего")
-
-    if score >= 3:
-        signal = "LONG"
-    elif score <= -3:
-        signal = "SHORT"
-    else:
-        signal = "NEUTRAL"
-
-    return {
-        "signal": signal,
-        "strength": abs(score),
-        "reasons": reasons
-    }
-
-# ================== COMMANDS ======================
-@router.message(Command("start"))
-async def start_cmd(message: Message):
-    await message.answer("✅ Бот онлайн\nКоманда:\n/signal BTCUSDT 1h")
-
-@router.message(Command("signal"))
-async def signal_cmd(message: Message):
-    parts = message.text.split()
-    symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
-    tf = parts[2] if len(parts) > 2 else "1h"
-
-    data = analyze_symbol(symbol, tf)
-
-    if "error" in data:
-        await message.answer("❌ Нет данных")
-        return
-
-    text = (
-        f"<b>Сигнал {symbol}</b>\nTF: {tf}\n\n"
-        f"Направление: <b>{data['signal']}</b>\n"
-        f"Сила: <b>{data['strength']}</b>\n\n"
-        "Причины:\n" + "\n".join(f"- {r}" for r in data["reasons"])
-    )
-
-    await message.answer(text)
-
-# ================== AUTO LOOP ======================
-async def auto_loop():
-    print("AUTO LOOP STARTED ✅")
-    symbols = ["BTCUSDT", "ETHUSDT"]
-    min_strength = 3
-    last_sent = {}
-
-    while True:
-        try:
-            for symbol in symbols:
-                data = analyze_symbol(symbol, "1h")
-
-                if "error" in data:
-                    continue
-
-                if data["strength"] < min_strength:
-                    continue
-
-                key = f"{symbol}_{data['signal']}"
-                if key in last_sent:
-                    continue
-
-                last_sent[key] = True
-
-                color = "🟢" if data["signal"] == "LONG" else "🔴"
-
-                text = (
-                    f"{color} <b>СИЛЬНЫЙ СИГНАЛ {symbol}</b>\n\n"
-                    f"Направление: {data['signal']}\n"
-                    f"Сила: {data['strength']}\n\n"
-                    "Контекст:\n" +
-                    "\n".join(f"- {r}" for r in data["reasons"])
-                )
-
-                await bot.send_message(CHAT_ID, text)
-
-            await asyncio.sleep(900)
-
-        except Exception as e:
-            print("AUTO LOOP ERROR:", e)
-            await asyncio.sleep(30)
-
-# ================== FASTAPI ======================
-app = FastAPI()
-
-@app.on_event("startup")
-async def on_startup():
-    print("STARTUP OK ✅")
-
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.set_webhook(WEBHOOK_URL)
-        print("WEBHOOK SET ✅")
-    except Exception as e:
-        print("WEBHOOK ERROR:", e)
-
-    asyncio.create_task(auto_loop())
-
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.json()
-    update = Update(**data)
-    await dp.feed_update(bot, update)
-    return {"ok": True}
-
-@app.get("/")
-async def health():
-    return {"status": "ok"}
