@@ -251,3 +251,6 @@ async def webhook(request: Request):
     update = Update(**data)
     await dp.feed_update(bot, update)
     return {"ok": True}
+@app.get("/")
+async def health():
+    return {"status": "ok"}
