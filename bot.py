@@ -12,6 +12,10 @@ from aiogram.client.default import DefaultBotProperties
 
 from fastapi import FastAPI, Request
 
+# ================== GLOBAL LOCK ==================
+
+STARTUP_LOCK = False
+
 # ================== ENV ==================
 
 load_dotenv()
@@ -46,8 +50,12 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
         print("OHLCV REQUEST ERROR:", e)
         return None
 
-    if not isinstance(data, list) or len(data) < 50:
-        print("OHLCV EMPTY:", symbol, tf)
+    if not isinstance(data, list):
+        print("BINANCE NOT LIST:", data)
+        return None
+
+    if len(data) < 50:
+        print("BINANCE LITTLE DATA:", symbol, tf, len(data))
         return None
 
     try:
@@ -66,8 +74,8 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
 
 def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     df = get_ohlcv(symbol, tf)
-    if df is None or len(df) < 50:
-        return {"error": "Недостаточно данных"}
+    if df is None:
+        return {"error": "no data"}
 
     close = df["close"]
     volume = df["volume"]
@@ -146,111 +154,4 @@ async def start_cmd(message: Message):
 async def signal_cmd(message: Message):
     parts = message.text.split()
     symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
-    tf = parts[2] if len(parts) > 2 else "1h"
-
-    data = analyze_symbol(symbol, tf)
-
-    if "error" in data:
-        await message.answer(f"❌ Ошибка: {data['error']}")
-        return
-
-    text = (
-        f"<b>Сигнал {symbol}</b>\nTF: {tf}\n\n"
-        f"Направление: <b>{data['signal']}</b>\n"
-        f"Сила: <b>{data['strength']}</b>\n\n"
-        "Причины:\n" + "\n".join(f"- {r}" for r in data["reasons"])
-    )
-
-    await message.answer(text)
-
-# ================== AUTO LOOP ==================
-
-async def auto_signal_loop():
-    print("AUTO LOOP STARTED ✅")
-
-    symbols = ["BTCUSDT", "ETHUSDT"]
-    tf = "1h"
-    htf = "4h"
-    min_strength = 3
-
-    last_sent = {}
-
-    while True:
-        print("AUTO LOOP TICK...")
-
-        try:
-            for symbol in symbols:
-                ltf = analyze_symbol(symbol, tf)
-                htf_data = analyze_symbol(symbol, htf)
-
-                if "error" in ltf or "error" in htf_data:
-                    continue
-
-                if ltf["signal"] != htf_data["signal"]:
-                    continue
-
-                if ltf["strength"] < min_strength:
-                    continue
-
-                key = f"{symbol}_{ltf['signal']}"
-                if key in last_sent:
-                    continue
-
-                last_sent[key] = True
-
-                color = "🟢" if ltf["signal"] == "LONG" else "🔴"
-
-                text = (
-                    f"{color} <b>СИЛЬНЫЙ СИГНАЛ {symbol}</b>\n"
-                    f"TF: {tf} | HTF: {htf}\n\n"
-                    f"Направление: {ltf['signal']}\n"
-                    f"Сила: {ltf['strength']}\n\n"
-                    "Контекст:\n" +
-                    "\n".join(f"- {r}" for r in ltf["reasons"])
-                )
-
-                print("SEND:", symbol, ltf["signal"])
-                await bot.send_message(CHAT_ID, text)
-
-            await asyncio.sleep(900)
-
-        except Exception as e:
-            print("AUTO LOOP ERROR:", e)
-            await asyncio.sleep(30)
-
-# ================== FASTAPI ==================
-
-app = FastAPI()
-
-@app.on_event("startup")
-async def on_startup():
-    print("STARTUP OK ✅")
-
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.set_webhook(WEBHOOK_URL)
-        print("WEBHOOK SET ✅")
-    except Exception as e:
-        print("WEBHOOK ERROR:", e)
-
-    asyncio.create_task(auto_signal_loop())
-
-    try:
-        await bot.send_message(CHAT_ID, "✅ Бот запущен. Автосигналы активны.")
-    except Exception as e:
-        print("START MESSAGE ERROR:", e)
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    print("SHUTDOWN OK")
-    await bot.session.close()
-
-@app.post(WEBHOOK_PATH)
-async def webhook(request: Request):
-    data = await request.json()
-    update = Update(**data)
-    await dp.feed_update(bot, update)
-    return {"ok": True}
-@app.get("/")
-async def health():
-    return {"status": "ok"}
+    tf = par
