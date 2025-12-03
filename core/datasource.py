@@ -12,8 +12,16 @@ COINGECKO_SYMBOLS = {
     "SOLUSDT": "solana",
     "XRPUSDT": "ripple",
     "ADAUSDT": "cardano",
-    "DOGEUSDT": "dogecoin"
+    "DOGEUSDT": "dogecoin",
+    "AVAXUSDT": "avalanche-2",
+    "LINKUSDT": "chainlink",
+    "MATICUSDT": "polygon",
+    "TONUSDT": "toncoin",
+    "NEARUSDT": "near",
+    "OPUSDT": "optimism",
+    "ARBUSDT": "arbitrum",
 }
+
 
 
 # =============================
