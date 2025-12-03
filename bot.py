@@ -3,7 +3,6 @@ import asyncio
 import requests
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
@@ -11,8 +10,9 @@ from aiogram.filters import Command
 from aiogram.types import Message, Update
 from aiogram.client.default import DefaultBotProperties
 
-# ================== ENV ==================
+from fastapi import FastAPI, Request
 
+# ================= ENV =================
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -20,15 +20,13 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBHOOK_PATH = "/webhook"
 
-# ================== BOT ==================
-
+# ================= BOT =================
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# ================== DATA ==================
-
+# ================= DATA =================
 def get_ohlcv(symbol="BTCUSDT", tf="1h"):
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": tf, "limit": 200}
@@ -39,7 +37,7 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
     except Exception:
         return None
 
-    if not isinstance(data, list) or len(data) < 100:
+    if not isinstance(data, list) or len(data) < 50:
         return None
 
     df = pd.DataFrame(data, columns=[
@@ -49,29 +47,25 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
 
     df["close"] = df["close"].astype(float)
     df["volume"] = df["volume"].astype(float)
-
     return df
 
-# ================== ANALYSIS ==================
-
+# ================= ANALYSIS =================
 def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     df = get_ohlcv(symbol, tf)
-
-    if df is None:
-        return {"error": "Нет данных"}
+    if df is None or len(df) < 50:
+        return {"error": "Недостаточно данных"}
 
     close = df["close"]
     volume = df["volume"]
 
     ema20 = close.ewm(span=20).mean().iloc[-1]
     ema50 = close.ewm(span=50).mean().iloc[-1]
-
     trend = "up" if ema20 > ema50 else "down"
-
-    rsi = close.pct_change().rolling(14).mean().iloc[-1]
 
     macd = close.ewm(span=12).mean() - close.ewm(span=26).mean()
     macd_hist = macd.iloc[-1]
+
+    rsi = close.pct_change().rolling(14).mean().iloc[-1]
 
     avg_vol = volume.rolling(20).mean().iloc[-2]
     last_vol = volume.iloc[-1]
@@ -82,10 +76,10 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
 
     if trend == "up":
         score += 1
-        reasons.append("Тренд вверх")
+        reasons.append("Тренд восходящий")
     else:
         score -= 1
-        reasons.append("Тренд вниз")
+        reasons.append("Тренд нисходящий")
 
     if macd_hist > 0:
         score += 1
@@ -103,7 +97,7 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
 
     if volume_ratio > 1.2:
         score += 1
-        reasons.append("Повышенный объём")
+        reasons.append("Объём выше среднего")
 
     if score >= 3:
         signal = "LONG"
@@ -118,14 +112,10 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
         "reasons": reasons
     }
 
-# ================== COMMANDS ==================
-
+# ================= COMMANDS =================
 @router.message(Command("start"))
 async def start_cmd(message: Message):
-    await message.answer(
-        "<b>Бот запущен</b>\n"
-        "/signal BTCUSDT 1h"
-    )
+    await message.answer("✅ Бот онлайн. Команда: /signal BTCUSDT 1h")
 
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
@@ -134,9 +124,8 @@ async def signal_cmd(message: Message):
     tf = parts[2] if len(parts) > 2 else "1h"
 
     data = analyze_symbol(symbol, tf)
-
     if "error" in data:
-        await message.answer("Ошибка: данных нет")
+        await message.answer(data["error"])
         return
 
     text = (
@@ -147,22 +136,19 @@ async def signal_cmd(message: Message):
         "Причины:\n" +
         "\n".join(f"- {r}" for r in data["reasons"])
     )
-
     await message.answer(text)
 
-# ================== AUTO LOOP ==================
-
+# ================= AUTO LOOP =================
 async def auto_signal_loop():
     symbols = ["BTCUSDT", "ETHUSDT"]
     tf = "1h"
     min_strength = 3
-    last_sent = {}
+    sent = {}
 
     while True:
         try:
             for symbol in symbols:
                 data = analyze_symbol(symbol, tf)
-
                 if "error" in data:
                     continue
 
@@ -170,13 +156,12 @@ async def auto_signal_loop():
                     continue
 
                 key = f"{symbol}_{data['signal']}"
-                if last_sent.get(key):
+                if sent.get(key):
                     continue
 
-                last_sent[key] = True
+                sent[key] = True
 
                 color = "🟢" if data["signal"] == "LONG" else "🔴"
-
                 text = (
                     f"{color} <b>СИЛЬНЫЙ СИГНАЛ {symbol}</b>\n"
                     f"TF: {tf}\n\n"
@@ -192,24 +177,28 @@ async def auto_signal_loop():
 
         except Exception as e:
             print("AUTO ERROR:", e)
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)
 
-# ================== FASTAPI ==================
-
+# ================= FASTAPI =================
 app = FastAPI()
 
 @app.on_event("startup")
-async def on_startup():
+async def startup():
+    print("STARTUP OK")
+    await asyncio.sleep(2)
+    await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
     asyncio.create_task(auto_signal_loop())
 
 @app.on_event("shutdown")
-async def on_shutdown():
+async def shutdown():
+    print("SHUTDOWN OK")
     await bot.session.close()
 
 @app.post(WEBHOOK_PATH)
-async def webhook(request: Request):
+async def telegram_webhook(request: Request):
     data = await request.json()
     update = Update(**data)
     await dp.feed_update(bot, update)
     return {"ok": True}
+
