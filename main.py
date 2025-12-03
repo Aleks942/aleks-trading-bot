@@ -12,72 +12,76 @@ from aiogram.client.default import DefaultBotProperties
 
 from fastapi import FastAPI, Request
 
-# ================== ENV ==================
+# ================== ENV ======================
+
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# ================== BOT ==================
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# ================== BOT ======================
+
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# ================== PROXY (COINGECKO) ==================
-PROXY_BASE = "https://round-moon-6916.aleks-aw1978.workers.dev"
+# ================== OKX DATA SOURCE ======================
 
-SYMBOL_MAP = {
-    "BTCUSDT": "bitcoin",
-    "ETHUSDT": "ethereum"
+TF_MAP = {
+    "1m": "1m",
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1H",
+    "4h": "4H",
+    "1d": "1D",
 }
 
-# ================== DATA ==================
-def get_ohlcv(symbol="BTCUSDT"):
-    coin = SYMBOL_MAP.get(symbol.upper())
-    if not coin:
-        print("UNKNOWN SYMBOL:", symbol)
-        return None
-
-    url = f"{PROXY_BASE}/?symbol={coin}&days=2"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
-    }
-
+def get_ohlcv(symbol="BTCUSDT", tf="1h"):
     try:
-        r = requests.get(url, headers=headers, timeout=20)
-        if r.status_code != 200:
-            print("PROXY HTTP STATUS:", r.status_code)
-            print(r.text[:200])
-            return None
+        inst = symbol.replace("USDT", "-USDT")
+        bar = TF_MAP.get(tf, "1H")
 
-        raw = r.text.strip()
-        if not raw.startswith("{"):
-            print("PROXY NOT JSON:", raw[:200])
-            return None
+        url = "https://www.okx.com/api/v5/market/candles"
+        params = {
+            "instId": inst,
+            "bar": bar,
+            "limit": 200
+        }
 
+        r = requests.get(url, params=params, timeout=10)
         data = r.json()
 
-        if "prices" not in data or "total_volumes" not in data:
-            print("BAD PROXY DATA STRUCTURE")
+        if "data" not in data:
+            print("OKX BAD RESPONSE:", data)
             return None
 
-        df = pd.DataFrame({
-            "close": [p[1] for p in data["prices"]],
-            "volume": [v[1] for v in data["total_volumes"]]
-        })
+        candles = data["data"]
 
-        return df
+        df = pd.DataFrame(candles, columns=[
+            "time", "open", "high", "low", "close",
+            "volume", "volCcy", "volCcyQuote", "confirm"
+        ])
+
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+
+        return df.iloc[::-1]
 
     except Exception as e:
-        print("PROXY REQUEST ERROR:", e)
+        print("OKX ERROR:", e)
         return None
 
-# ================== ANALYSIS ==================
-def analyze_symbol(symbol="BTCUSDT"):
-    df = get_ohlcv(symbol)
+# ================== ANALYSIS ======================
+
+def analyze_symbol(symbol="BTCUSDT", tf="1h"):
+    df = get_ohlcv(symbol, tf)
     if df is None or len(df) < 50:
         return {"error": "no data"}
 
@@ -95,13 +99,9 @@ def analyze_symbol(symbol="BTCUSDT"):
 
     avg_gain = gain.rolling(14).mean()
     avg_loss = loss.rolling(14).mean()
-
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     rsi = rsi.iloc[-1]
-
-    macd = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    macd_hist = macd.iloc[-1]
 
     avg_vol = volume.rolling(20).mean().iloc[-2]
     last_vol = volume.iloc[-1]
@@ -117,29 +117,20 @@ def analyze_symbol(symbol="BTCUSDT"):
         score -= 1
         reasons.append("Тренд нисходящий")
 
-    if macd_hist > 0:
-        score += 1
-        reasons.append("MACD бычий")
-    else:
-        score -= 1
-        reasons.append("MACD медвежий")
-
     if rsi > 55:
         score += 1
         reasons.append("RSI выше 55")
     elif rsi < 45:
         score -= 1
         reasons.append("RSI ниже 45")
-    else:
-        reasons.append("RSI нейтрален")
 
     if volume_ratio > 1.2:
         score += 1
         reasons.append("Объём выше среднего")
 
-    if score >= 3:
+    if score >= 2:
         signal = "LONG"
-    elif score <= -3:
+    elif score <= -2:
         signal = "SHORT"
     else:
         signal = "NEUTRAL"
@@ -150,76 +141,64 @@ def analyze_symbol(symbol="BTCUSDT"):
         "reasons": reasons
     }
 
-# ================== COMMANDS ==================
+# ================== COMMANDS ======================
+
 @router.message(Command("start"))
 async def start_cmd(message: Message):
-    await message.answer("✅ Бот онлайн\nКоманда:\n/signal BTCUSDT")
+    await message.answer("✅ Бот онлайн\nКоманда:\n/signal BTCUSDT 1h")
 
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
     parts = message.text.split()
     symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
+    tf = parts[2] if len(parts) > 2 else "1h"
 
-    data = analyze_symbol(symbol)
+    data = analyze_symbol(symbol, tf)
 
     if "error" in data:
-        await message.answer("❌ Нет данных")
+        await message.answer("❌ Нет данных с OKX")
         return
 
     text = (
-        f"<b>Сигнал {symbol}</b>\n\n"
+        f"<b>Сигнал {symbol}</b>\nTF: {tf}\n\n"
         f"Направление: <b>{data['signal']}</b>\n"
         f"Сила: <b>{data['strength']}</b>\n\n"
-        "Причины:\n" +
-        "\n".join(f"- {r}" for r in data["reasons"])
+        "Причины:\n" + "\n".join(f"- {r}" for r in data["reasons"])
     )
 
     await message.answer(text)
 
-# ================== AUTO LOOP ==================
+# ================== AUTO LOOP ======================
+
 async def auto_loop():
     print("AUTO LOOP STARTED ✅")
-
-    symbols = ["BTCUSDT", "ETHUSDT"]
-    min_strength = 3
-    last_sent = {}
+    last_sent = ""
 
     while True:
-        try:
-            for symbol in symbols:
-                data = analyze_symbol(symbol)
+        data = analyze_symbol("BTCUSDT", "1h")
 
-                if "error" in data:
-                    continue
+        if "error" not in data:
+            key = f"{data['signal']}_{data['strength']}"
 
-                if data["strength"] < min_strength:
-                    continue
-
-                key = f"{symbol}_{data['signal']}"
-                if key in last_sent:
-                    continue
-
-                last_sent[key] = True
+            if key != last_sent and data["signal"] != "NEUTRAL":
+                last_sent = key
 
                 color = "🟢" if data["signal"] == "LONG" else "🔴"
 
                 text = (
-                    f"{color} <b>СИЛЬНЫЙ СИГНАЛ {symbol}</b>\n\n"
+                    f"{color} <b>AUTO BTC SIGNAL</b>\n\n"
                     f"Направление: {data['signal']}\n"
                     f"Сила: {data['strength']}\n\n"
-                    "Контекст:\n" +
+                    "Причины:\n" +
                     "\n".join(f"- {r}" for r in data["reasons"])
                 )
 
                 await bot.send_message(CHAT_ID, text)
 
-            await asyncio.sleep(900)
+        await asyncio.sleep(900)
 
-        except Exception as e:
-            print("AUTO LOOP ERROR:", e)
-            await asyncio.sleep(30)
+# ================== FASTAPI ======================
 
-# ================== FASTAPI ==================
 app = FastAPI()
 
 @app.on_event("startup")
@@ -233,6 +212,7 @@ async def on_startup():
     except Exception as e:
         print("WEBHOOK ERROR:", e)
 
+    await bot.send_message(CHAT_ID, "✅ Бот запущен. Источник: OKX")
     asyncio.create_task(auto_loop())
 
 @app.post("/webhook")
