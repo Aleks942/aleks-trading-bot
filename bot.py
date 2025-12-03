@@ -1,5 +1,8 @@
 import os
 import asyncio
+import requests
+import pandas as pd
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -11,162 +14,207 @@ from aiogram.client.default import DefaultBotProperties
 
 from fastapi import FastAPI, Request
 
-from core.analyzer import analyze_symbol
+# ================== ENV ==================
 
-# =========================
-# CONFIG
-# =========================
 TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID", "0"))
+CHAT_ID = int(os.getenv("CHAT_ID"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBHOOK_PATH = "/webhook"
 
-BASE_TF = "1h"
-HTF_TF = "4h"
+# ================== BOT ==================
 
-bot = Bot(
-    token=TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
-
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-AUTO_TASK = None  # защита от дублей
+# ================== DATA ==================
 
-# =========================
-# COMMANDS
-# =========================
+def get_ohlcv(symbol="BTCUSDT", tf="1h"):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": tf, "limit": 200}
+
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+    except Exception:
+        return None
+
+    if not isinstance(data, list):
+        return None
+
+    df = pd.DataFrame(data, columns=[
+        "time","open","high","low","close","volume",
+        "_","_","_","_","_","_"
+    ])
+
+    df["close"] = df["close"].astype(float)
+    df["volume"] = df["volume"].astype(float)
+
+    return df
+
+# ================== ANALYSIS ==================
+
+def analyze_symbol(symbol="BTCUSDT", tf="1h"):
+    df = get_ohlcv(symbol, tf)
+
+    if df is None or len(df) < 50:
+        return {"error": "Недостаточно данных"}
+
+    close = df["close"]
+    volume = df["volume"]
+
+    ema20 = close.ewm(span=20).mean().iloc[-1]
+    ema50 = close.ewm(span=50).mean().iloc[-1]
+
+    trend = "up" if ema20 > ema50 else "down"
+
+    rsi = close.pct_change().rolling(14).mean().iloc[-1]
+
+    macd = close.ewm(span=12).mean() - close.ewm(span=26).mean()
+    macd_hist = macd.iloc[-1]
+
+    avg_vol = volume.rolling(20).mean().iloc[-2]
+    last_vol = volume.iloc[-1]
+    volume_ratio = last_vol / avg_vol if avg_vol > 0 else 1
+
+    score = 0
+    reasons = []
+
+    if trend == "up":
+        score += 1
+        reasons.append("Тренд восходящий")
+    else:
+        score -= 1
+        reasons.append("Тренд нисходящий")
+
+    if macd_hist > 0:
+        score += 1
+        reasons.append("MACD бычий")
+    else:
+        score -= 1
+        reasons.append("MACD медвежий")
+
+    if rsi > 0:
+        score += 1
+        reasons.append("RSI поддерживает рост")
+    else:
+        score -= 1
+        reasons.append("RSI слабый")
+
+    if volume_ratio > 1.2:
+        score += 1
+        reasons.append("Объём выше среднего")
+
+    if score >= 3:
+        signal = "LONG"
+    elif score <= -3:
+        signal = "SHORT"
+    else:
+        signal = "NEUTRAL"
+
+    return {
+        "signal": signal,
+        "strength": abs(score),
+        "reasons": reasons,
+        "volume_ratio": volume_ratio
+    }
+
+# ================== COMMANDS ==================
+
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
-        "<b>Бот работает (HTF активен)</b>\n"
+        "<b>Бот запущен</b>\n"
         "Команды:\n"
         "/signal BTCUSDT 1h"
     )
-
 
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
     parts = message.text.split()
     symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
+    tf = parts[2] if len(parts) > 2 else "1h"
 
-    base = analyze_symbol(symbol, BASE_TF)
-    htf = analyze_symbol(symbol, HTF_TF)
+    data = analyze_symbol(symbol, tf)
 
-    if "error" in base:
-        await message.answer(f"Ошибка: {base['error']}")
+    if "error" in data:
+        await message.answer(f"Ошибка: {data['error']}")
         return
-    if "error" in htf:
-        await message.answer(f"Ошибка HTF: {htf['error']}")
-        return
-
-    htf_trend = htf["signal"]
-    blocked = False
-
-    if base["signal"] == "LONG" and htf_trend != "LONG":
-        blocked = True
-    if base["signal"] == "SHORT" and htf_trend != "SHORT":
-        blocked = True
-
-    block_text = "❌ Заблокирован HTF" if blocked else "✅ Подтверждён HTF"
-
-    reasons = base["reasons"] + [f"HTF (4h): {htf_trend}", block_text]
 
     text = (
         f"<b>Сигнал {symbol}</b>\n"
-        f"TF: {BASE_TF} | HTF: {HTF_TF}\n\n"
-        f"Направление: <b>{base['signal']}</b>\n"
-        f"Сила: <b>{base['strength']}</b>\n\n"
-        "<b>Контекст:</b>\n" + "\n".join(f"- {r}" for r in reasons)
+        f"TF: {tf}\n\n"
+        f"Направление: <b>{data['signal']}</b>\n"
+        f"Сила: <b>{data['strength']}</b>\n\n"
+        "Причины:\n" +
+        "\n".join(f"- {r}" for r in data["reasons"])
     )
 
     await message.answer(text)
 
-# =========================
-# AUTO LOOP WITH HTF
-# =========================
+# ================== AUTO LOOP ==================
+
 async def auto_signal_loop():
     symbols = ["BTCUSDT", "ETHUSDT"]
+    tf = "1h"
+    htf = "4h"
+    min_strength = 3
+
+    last_sent = {}
 
     while True:
-        for symbol in symbols:
-            base = analyze_symbol(symbol, BASE_TF)
-            htf = analyze_symbol(symbol, HTF_TF)
+        try:
+            for symbol in symbols:
+                data = analyze_symbol(symbol, tf)
+                htf_data = analyze_symbol(symbol, htf)
 
-            if "error" in base or "error" in htf:
-                continue
+                if "error" in data or "error" in htf_data:
+                    continue
 
-            strength = base["strength"]
-            signal = base["signal"]
-            htf_trend = htf["signal"]
+                if data["signal"] != htf_data["signal"]:
+                    continue
 
-            htf_ok = (
-                (signal == "LONG" and htf_trend == "LONG") or
-                (signal == "SHORT" and htf_trend == "SHORT")
-            )
+                if data["strength"] < min_strength:
+                    continue
 
-            # Цвет и статус
-            if strength >= 3 and htf_ok:
-                icon = "🟢" if signal == "LONG" else "🔴"
-                status = "сильный импульс (HTF подтверждён)"
-            else:
-                icon = "🟡"
-                status = "слабый импульс / без HTF"
+                key = f"{symbol}_{data['signal']}"
+                if last_sent.get(key):
+                    continue
 
-            text = (
-                f"{icon} <b>Обзор рынка {symbol}</b>\n"
-                f"TF: {BASE_TF} | HTF: {HTF_TF}\n\n"
-                f"Направление: {signal}\n"
-                f"Сила: {strength}\n"
-                f"Статус: {status}\n\n"
-                "<b>Контекст:</b>\n"
-                + "\n".join(f"- {r}" for r in base["reasons"])
-                + f"\n- HTF (4h): {htf_trend}"
-            )
+                last_sent[key] = True
 
-            try:
+                color = "🟢" if data["signal"] == "LONG" else "🔴"
+
+                text = (
+                    f"{color} <b>СИЛЬНЫЙ СИГНАЛ {symbol}</b>\n"
+                    f"TF: {tf} | HTF: {htf}\n\n"
+                    f"Направление: {data['signal']}\n"
+                    f"Сила: {data['strength']}\n\n"
+                    "Контекст:\n" +
+                    "\n".join(f"- {r}" for r in data["reasons"])
+                )
+
                 await bot.send_message(CHAT_ID, text)
-            except Exception as e:
-                print("SEND ERROR:", e)
 
-        await asyncio.sleep(900)  # 15 минут
+            await asyncio.sleep(900)
 
-# =========================
-# FASTAPI
-# =========================
+        except Exception as e:
+            print("AUTO ERROR:", e)
+            await asyncio.sleep(30)
+
+# ================== FASTAPI ==================
+
 app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    global AUTO_TASK
-
-    print("[DEBUG] Запуск бота (HTF)")
-    print("[DEBUG] WEBHOOK_URL:", WEBHOOK_URL)
-
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("[DEBUG] Старый webhook удалён")
-    except:
-        pass
-
+    await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
-    print("[DEBUG] Новый webhook установлен")
-
-    if AUTO_TASK is None:
-        print("[DEBUG] Запуск авто-аналитики")
-        AUTO_TASK = asyncio.create_task(auto_signal_loop())
+    asyncio.create_task(auto_signal_loop())
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    global AUTO_TASK
-    print("[DEBUG] Остановка бота")
-
-    if AUTO_TASK:
-        AUTO_TASK.cancel()
-        AUTO_TASK = None
-
     await bot.session.close()
 
 @app.post(WEBHOOK_PATH)
@@ -176,5 +224,3 @@ async def webhook(request: Request):
     await dp.feed_update(bot, update)
     return {"ok": True}
 
-
-        
