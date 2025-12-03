@@ -101,13 +101,26 @@ class DataSource:
 # PUBLIC FUNCTION
 # =============================
 def get_ohlcv(symbol, timeframe):
-
     ds = DataSource()
 
-    # 1. Пробуем BYBIT
-    df = ds.get_klines_bybit(symbol, timeframe)
-    if df is not None and len(df) > 0:
-        return df
+    tf_map = {
+        "1m": "1",
+        "5m": "5",
+        "15m": "15",
+        "30m": "30",
+        "1h": "60",
+        "4h": "240"
+    }
+
+    bybit_tf = tf_map.get(timeframe, "60")
+
+    df = ds.get_klines_bybit(symbol, bybit_tf)
+
+    if df is None or len(df) < 50:
+        df = ds.get_klines_binance(symbol, timeframe)
+
+    return df
+
 
     # 2. Если не получилось — Binance
     df = ds.get_klines_binance(symbol, timeframe)
