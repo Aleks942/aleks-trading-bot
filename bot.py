@@ -18,8 +18,9 @@ from core.analyzer import analyze_symbol
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBHOOK_PATH = "/webhook"
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")     # Полный URL Railway
+WEBHOOK_PATH = "/webhook"                  # Путь FastAPI
 
 bot = Bot(
     token=TOKEN,
@@ -31,7 +32,7 @@ router = Router()
 dp.include_router(router)
 
 # -------------------------------------------------
-# Команды
+# Команды Telegram
 # -------------------------------------------------
 
 @router.message(Command("start"))
@@ -65,7 +66,7 @@ async def signal_cmd(message: Message):
     await message.answer(text)
 
 # -------------------------------------------------
-# FastAPI
+# FastAPI + Webhook
 # -------------------------------------------------
 
 app = FastAPI()
@@ -73,12 +74,16 @@ app = FastAPI()
 @app.on_event("startup")
 async def on_startup():
     print("[DEBUG] Запуск бота")
-    print("[DEBUG] WEBHOOK_URL:", WEBHOOK_URL)
+    print("[DEBUG] Удаляю старый webhook...")
+    await bot.delete_webhook(drop_pending_updates=True)
 
-    # Устанавливаем webhook
-    if WEBHOOK_URL:
-        await bot.set_webhook(WEBHOOK_URL)
-        print("[DEBUG] Webhook установлен")
+    print("[DEBUG] Ставлю новый webhook:", WEBHOOK_URL)
+    await bot.set_webhook(
+        url=WEBHOOK_URL,
+        drop_pending_updates=True,
+        allowed_updates=["message"]
+    )
+    print("[DEBUG] Webhook установлен!")
 
 @app.on_event("shutdown")
 async def on_shutdown():
