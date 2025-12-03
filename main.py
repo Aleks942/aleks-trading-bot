@@ -4,12 +4,13 @@ import requests
 import pandas as pd
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message, Update
 from aiogram.client.default import DefaultBotProperties
+
+from fastapi import FastAPI, Request
 
 # ================== ENV ======================
 
@@ -30,12 +31,22 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# ================== BINANCE VIA PROXY ======================
+# ================== BINANCE VIA PROXY =====================
 
 PROXY_BASE = "https://round-moon-6916.aleks-aw1978.workers.dev"
 
 def get_ohlcv(symbol="BTCUSDT", tf="1h"):
-    interval = tf
+    tf_map = {
+        "1m": "1m",
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1h": "1h",
+        "4h": "4h",
+        "1d": "1d"
+    }
+
+    interval = tf_map.get(tf, "1h")
 
     url = PROXY_BASE + "/api/v3/klines"
     params = {
@@ -56,14 +67,13 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
         return None
 
     if len(data) < 50:
-        print("BINANCE VIA PROXY LITTLE DATA")
+        print("BINANCE VIA PROXY LITTLE DATA:", symbol, tf)
         return None
 
     df = pd.DataFrame(data, columns=[
         "time","open","high","low","close","volume",
         "_","_","_","_","_","_"
     ])
-
     df["close"] = df["close"].astype(float)
     df["volume"] = df["volume"].astype(float)
     return df
@@ -87,10 +97,10 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
 
     if trend == "up":
         score += 1
-        reasons.append("Тренд вверх")
+        reasons.append("Тренд восходящий")
     else:
         score -= 1
-        reasons.append("Тренд вниз")
+        reasons.append("Тренд нисходящий")
 
     if score >= 1:
         signal = "LONG"
@@ -135,6 +145,7 @@ async def signal_cmd(message: Message):
 # ================== AUTO LOOP ======================
 
 async def auto_loop():
+    print("AUTO LOOP STARTED ✅")
     while True:
         data = analyze_symbol("BTCUSDT", "1h")
         if "error" not in data:
@@ -166,6 +177,5 @@ async def webhook(request: Request):
     return {"ok": True}
 
 @app.get("/")
-async def root():
+async def health():
     return {"status": "ok"}
-
