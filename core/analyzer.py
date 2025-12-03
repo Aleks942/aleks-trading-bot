@@ -19,7 +19,7 @@ def analyze_symbol(symbol: str, tf: str):
         if df is None or len(df) < 20:
             return {"error": "Недостаточно данных"}
 
-        # 2. Модули (ЖЁСТКАЯ ЗАЩИТА)
+        # 2. Модули (защита от None и строк)
         indi = safe_dict(calculate_indicators(df))
         div = safe_dict(detect_divergence(df))
         mf = safe_dict(analyze_moneyflow(df))
@@ -61,13 +61,13 @@ def analyze_symbol(symbol: str, tf: str):
         else:
             reasons.append("RSI нейтральный")
 
-        # SuperTrend
+        # SuperTrend + последняя цена
         try:
             supertrend = float(indi.get("supertrend", 0))
             last_price = float(df["close"].iloc[-1])
         except Exception:
             supertrend = 0
-            last_price = 0
+            last_price = 0.0
 
         if supertrend < last_price:
             reasons.append("SuperTrend: рынок над линией (бычий)")
@@ -133,12 +133,44 @@ def analyze_symbol(symbol: str, tf: str):
         else:
             signal = "NEUTRAL"
 
-        return {
+        # 6. Уровни (простая модель: 1% стоп, 2% и 3% тейки)
+        levels = None
+        if last_price > 0 and signal in ("LONG", "SHORT"):
+            sl_pct = 0.01
+            tp1_pct = 0.02
+            tp2_pct = 0.03
+
+            if signal == "LONG":
+                entry = last_price
+                stop_loss = last_price * (1 - sl_pct)
+                tp1 = last_price * (1 + tp1_pct)
+                tp2 = last_price * (1 + tp2_pct)
+            else:  # SHORT
+                entry = last_price
+                stop_loss = last_price * (1 + sl_pct)
+                tp1 = last_price * (1 - tp1_pct)
+                tp2 = last_price * (1 - tp2_pct)
+
+            levels = {
+                "entry": entry,
+                "stop_loss": stop_loss,
+                "take_profit_1": tp1,
+                "take_profit_2": tp2,
+            }
+
+        result = {
             "signal": signal,
             "strength": abs(score),
-            "reasons": reasons
+            "reasons": reasons,
         }
+
+        if levels:
+            result["levels"] = levels
+
+        return result
 
     except Exception as e:
         return {"error": str(e)}
 
+
+   
