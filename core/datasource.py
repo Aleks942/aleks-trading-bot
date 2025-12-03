@@ -2,8 +2,10 @@ import requests
 import pandas as pd
 
 
-# Конвертация интервалов в формат BYBIT
-def convert_tf_to_bybit(tf):
+# =============================
+# КОНВЕРТАЦИЯ TF ДЛЯ BYBIT
+# =============================
+def convert_tf_to_bybit(tf: str) -> str:
     mapping = {
         "1m": "1",
         "3m": "3",
@@ -15,9 +17,12 @@ def convert_tf_to_bybit(tf):
         "1d": "D",
         "1w": "W"
     }
-    return mapping.get(tf, "60")
+    return mapping.get(tf, "60")  # по умолчанию 1h
 
 
+# =============================
+# DATA SOURCE
+# =============================
 class DataSource:
 
     def __init__(self):
@@ -25,7 +30,7 @@ class DataSource:
         self.binance_url = "https://api.binance.com"
 
     # ============================
-    #   BYBIT KLINES
+    # BYBIT KLINES
     # ============================
     def get_klines_bybit(self, symbol="BTCUSDT", interval="1h"):
 
@@ -60,12 +65,12 @@ class DataSource:
 
         df["timestamp"] = df["timestamp"].astype("int64") // 1000
         df.set_index("timestamp", inplace=True)
-
         df = df.astype(float)
+
         return df
 
     # ============================
-    #   BINANCE KLINES
+    # BINANCE KLINES (FALLBACK)
     # ============================
     def get_klines_binance(self, symbol="BTCUSDT", interval="1h"):
 
@@ -92,41 +97,31 @@ class DataSource:
 
         df["open_time"] = df["open_time"] // 1000
         df.set_index("open_time", inplace=True)
-
         df = df.astype(float)
+
         return df
 
 
 # =============================
-# PUBLIC FUNCTION
+# PUBLIC API
 # =============================
-def get_ohlcv(symbol, timeframe):
+def get_ohlcv(symbol: str, timeframe: str):
+
     ds = DataSource()
 
-    tf_map = {
-        "1m": "1",
-        "5m": "5",
-        "15m": "15",
-        "30m": "30",
-        "1h": "60",
-        "4h": "240"
-    }
+    # 1. Пробуем BYBIT
+    df = ds.get_klines_bybit(symbol, timeframe)
 
-    bybit_tf = tf_map.get(timeframe, "60")
+    if df is not None and len(df) >= 50:
+        return df
 
-    df = ds.get_klines_bybit(symbol, bybit_tf)
-
-    if df is None or len(df) < 50:
-        df = ds.get_klines_binance(symbol, timeframe)
-
-    return df
-
-
-    # 2. Если не получилось — Binance
+    # 2. Если BYBIT не дал данных — BINANCE
     df = ds.get_klines_binance(symbol, timeframe)
-    if df is not None and len(df) > 0:
+
+    if df is not None and len(df) >= 50:
         return df
 
     # 3. Полный фэйл
     return None
 
+       
