@@ -4,13 +4,12 @@ import requests
 import pandas as pd
 from dotenv import load_dotenv
 
+from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message, Update
 from aiogram.client.default import DefaultBotProperties
-
-from fastapi import FastAPI, Request
 
 # ================== ENV ======================
 
@@ -19,7 +18,6 @@ load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBHOOK_PATH = "/webhook"
 
 # ================== BOT ======================
 
@@ -32,22 +30,12 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# ================== BINANCE VIA PROXY =====================
+# ================== BINANCE VIA PROXY ======================
 
 PROXY_BASE = "https://round-moon-6916.aleks-aw1978.workers.dev"
 
 def get_ohlcv(symbol="BTCUSDT", tf="1h"):
-    tf_map = {
-        "1m": "1m",
-        "5m": "5m",
-        "15m": "15m",
-        "30m": "30m",
-        "1h": "1h",
-        "4h": "4h",
-        "1d": "1d"
-    }
-
-    interval = tf_map.get(tf, "1h")
+    interval = tf
 
     url = PROXY_BASE + "/api/v3/klines"
     params = {
@@ -68,23 +56,19 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
         return None
 
     if len(data) < 50:
-        print("BINANCE VIA PROXY LITTLE DATA:", symbol, tf)
+        print("BINANCE VIA PROXY LITTLE DATA")
         return None
 
-    try:
-        df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "_","_","_","_","_","_"
-        ])
-        df["close"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
-        return df
+    df = pd.DataFrame(data, columns=[
+        "time","open","high","low","close","volume",
+        "_","_","_","_","_","_"
+    ])
 
-    except Exception as e:
-        print("PROXY DF ERROR:", e)
-        return None
+    df["close"] = df["close"].astype(float)
+    df["volume"] = df["volume"].astype(float)
+    return df
 
-# ================== ANALYSIS =================
+# ================== ANALYSIS ======================
 
 def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     df = get_ohlcv(symbol, tf)
@@ -98,44 +82,90 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     ema50 = close.ewm(span=50).mean().iloc[-1]
     trend = "up" if ema20 > ema50 else "down"
 
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.iloc[-1]
-
-    macd = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    macd_hist = macd.iloc[-1]
-
-    avg_vol = volume.rolling(20).mean().iloc[-2]
-    last_vol = volume.iloc[-1]
-    volume_ratio = last_vol / avg_vol if avg_vol > 0 else 1
-
     score = 0
     reasons = []
 
     if trend == "up":
         score += 1
-        reasons.append("Тренд восходящий")
+        reasons.append("Тренд вверх")
     else:
         score -= 1
-        reasons.append("Тренд нисходящий")
+        reasons.append("Тренд вниз")
 
-    if macd_hist > 0:
-        score += 1
-        reasons.append("MACD бычий")
+    if score >= 1:
+        signal = "LONG"
+    elif score <= -1:
+        signal = "SHORT"
     else:
-        score -= 1
-        reasons.append("MACD медвежий")
+        signal = "NEUTRAL"
 
-    if rsi > 55:
-        score += 1
-        reasons.append("RSI выше 55")
-    elif rsi < 45:
-        score -= 1
-        reasons.append("RSI ниже 45")
+    return {
+        "signal": signal,
+        "strength": abs(score),
+        "reasons": reasons
+    }
+
+# ================== COMMANDS ======================
+
+@router.message(Command("start"))
+async def start_cmd(message: Message):
+    await message.answer("✅ Бот онлайн\nКоманда:\n/signal BTCUSDT 1h")
+
+@router.message(Command("signal"))
+async def signal_cmd(message: Message):
+    parts = message.text.split()
+    symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
+    tf = parts[2] if len(parts) > 2 else "1h"
+
+    data = analyze_symbol(symbol, tf)
+
+    if "error" in data:
+        await message.answer("❌ Нет данных")
+        return
+
+    text = (
+        f"<b>Сигнал {symbol}</b>\nTF: {tf}\n\n"
+        f"Направление: <b>{data['signal']}</b>\n"
+        f"Сила: <b>{data['strength']}</b>\n\n"
+        "Причины:\n" + "\n".join(f"- {r}" for r in data["reasons"])
+    )
+
+    await message.answer(text)
+
+# ================== AUTO LOOP ======================
+
+async def auto_loop():
+    while True:
+        data = analyze_symbol("BTCUSDT", "1h")
+        if "error" not in data:
+            print("AUTO:", data)
+        await asyncio.sleep(900)
+
+# ================== FASTAPI APP ======================
+
+app = FastAPI()
+
+@app.on_event("startup")
+async def on_startup():
+    print("STARTUP OK ✅")
+
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.set_webhook(WEBHOOK_URL)
+        print("WEBHOOK SET ✅")
+    except Exception as e:
+        print("WEBHOOK ERROR:", e)
+
+    asyncio.create_task(auto_loop())
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    data = await request.json()
+    update = Update(**data)
+    await dp.feed_update(bot, update)
+    return {"ok": True}
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
 
