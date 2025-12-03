@@ -2,79 +2,13 @@ import requests
 import pandas as pd
 
 
-# =============================
-# КОНВЕРТАЦИЯ TF ДЛЯ BYBIT
-# =============================
-def convert_tf_to_bybit(tf: str) -> str:
-    mapping = {
-        "1m": "1",
-        "3m": "3",
-        "5m": "5",
-        "15m": "15",
-        "30m": "30",
-        "1h": "60",
-        "4h": "240",
-        "1d": "D",
-        "1w": "W"
-    }
-    return mapping.get(tf, "60")
-
-
-# =============================
-# DATA SOURCE
-# =============================
 class DataSource:
 
     def __init__(self):
-        self.bybit_url = "https://api.bybit.com"
         self.binance_url = "https://api.binance.com"
 
     # ============================
-    # BYBIT KLINES
-    # ============================
-    def get_klines_bybit(self, symbol="BTCUSDT", interval="1h"):
-
-        interval_converted = convert_tf_to_bybit(interval)
-
-        url = f"{self.bybit_url}/v5/market/kline"
-        params = {
-            "category": "linear",
-            "symbol": symbol,
-            "interval": interval_converted,
-            "limit": 200
-        }
-
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-
-        try:
-            r = requests.get(url, params=params, headers=headers, timeout=10)
-            data = r.json()
-        except Exception:
-            return None
-
-        if "result" not in data or "list" not in data["result"]:
-            return None
-
-        raw = data["result"]["list"]
-        if not raw:
-            return None
-
-        df = pd.DataFrame(raw)
-        df.columns = [
-            "timestamp", "open", "high", "low", "close",
-            "volume", "_", "_"
-        ]
-
-        df["timestamp"] = df["timestamp"].astype("int64") // 1000
-        df.set_index("timestamp", inplace=True)
-        df = df.astype(float)
-
-        return df
-
-    # ============================
-    # BINANCE KLINES (FALLBACK)
+    # BINANCE KLINES
     # ============================
     def get_klines_binance(self, symbol="BTCUSDT", interval="1h"):
 
@@ -93,9 +27,11 @@ class DataSource:
             r = requests.get(url, params=params, headers=headers, timeout=10)
             data = r.json()
         except Exception:
+            print("BINANCE REQUEST FAILED")
             return None
 
         if not isinstance(data, list) or len(data) == 0:
+            print("BINANCE EMPTY DATA")
             return None
 
         df = pd.DataFrame(data, columns=[
@@ -107,25 +43,20 @@ class DataSource:
         df.set_index("open_time", inplace=True)
         df = df.astype(float)
 
+        print("BINANCE LEN:", len(df))
         return df
 
 
 # =============================
-# PUBLIC API
+# PUBLIC API (только BINANCE)
 # =============================
 def get_ohlcv(symbol: str, timeframe: str):
 
     ds = DataSource()
 
-    # 1. Пробуем BYBIT
-    df = ds.get_klines_bybit(symbol, timeframe)
-    if df is not None and len(df) >= 50:
-        return df
-
-    # 2. Если BYBIT не дал — BINANCE
     df = ds.get_klines_binance(symbol, timeframe)
+
     if df is not None and len(df) >= 50:
         return df
 
-    # 3. Полный фэйл
     return None
