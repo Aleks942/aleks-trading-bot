@@ -12,9 +12,9 @@ from fastapi import FastAPI, Request
 
 from core.analyzer import analyze_symbol
 
-# -----------------------------
-# Загрузка переменных окружения
-# -----------------------------
+# =============================
+# Загрузка переменных
+# =============================
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -22,9 +22,9 @@ CHAT_ID = int(os.getenv("CHAT_ID", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBHOOK_PATH = "/webhook"
 
-# -----------------------------
+# =============================
 # Инициализация бота
-# -----------------------------
+# =============================
 bot = Bot(
     token=TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -34,15 +34,10 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-
-# -----------------------------
-# Вспомогательная функция форматирования сигнала
-# -----------------------------
+# =============================
+# Форматирование текста сигналов
+# =============================
 def format_signal_text(symbol: str, tf: str, data: dict, htf_used: bool = False) -> str:
-    """
-    Собирает текст сигнала для отправки в Telegram.
-    Если htf_used=True — добавляем пометку, что учтён старший ТФ.
-    """
     if "error" in data:
         return f"Ошибка: {data['error']}"
 
@@ -53,25 +48,52 @@ def format_signal_text(symbol: str, tf: str, data: dict, htf_used: bool = False)
     text = (
         f"<b>Сигнал {symbol}</b>\n"
         f"TF: <b>{header_tf}</b>\n\n"
-        f"Направление: <b>{data.get('signal', 'нет данных')}</b>\n"
-        f"Сила: <b>{data.get('strength', 0)}</b>\n\n"
+        f"Направление: <b>{data.get('signal')}</b>\n"
+        f"Сила: <b>{data.get('strength')}</b>\n\n"
         "<b>Причины:</b>\n" +
         "\n".join(f"- {r}" for r in data.get("reasons", []))
     )
-
     return text
 
 
-# -----------------------------
+def format_overview_text(symbol: str, tf: str, data: dict) -> str:
+    strength = int(data.get("strength", 0))
+    direction = data.get("signal", "NEUTRAL")
+
+    if strength >= 3:
+        emoji = "🟠"
+        status = "усиливается, наблюдать"
+    elif strength == 2:
+        emoji = "🟡"
+        status = "слабый импульс"
+    else:
+        emoji = "⚪"
+        status = "флет / неопределённость"
+
+    text = (
+        f"{emoji} <b>Обзор рынка {symbol}</b>\n"
+        f"TF: <b>{tf}</b>\n\n"
+        f"Направление: <b>{direction}</b>\n"
+        f"Сила: <b>{strength}</b>\n"
+        f"Статус: <b>{status}</b>\n\n"
+        "<b>Контекст:</b>\n" +
+        "\n".join(f"- {r}" for r in data.get("reasons", []))
+    )
+    return text
+
+
+# =============================
 # Команды
-# -----------------------------
+# =============================
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
-        "<b>Бот работает</b>\n"
+        "<b>Бот работает</b>\n\n"
         "Команды:\n"
         "/signal BTCUSDT 1h\n\n"
-        "Автосигналы: BTCUSDT 1h, сила ≥ 3, только по тренду 4h."
+        "Авто-режим:\n"
+        "• Обзор BTC + ETH каждые 15 минут\n"
+        "• Сильные сигналы: сила ≥ 3 + подтверждение 4h"
     )
 
 
@@ -84,40 +106,32 @@ async def signal_cmd(message: Message):
 
         data = analyze_symbol(symbol, tf)
         text = format_signal_text(symbol, tf, data, htf_used=False)
-
         await message.answer(text)
 
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
 
-# -----------------------------
-# FastAPI + webhook
-# -----------------------------
+# =============================
+# FastAPI + Webhook
+# =============================
 app = FastAPI()
-
 
 @app.on_event("startup")
 async def on_startup():
     print("[DEBUG] Запуск бота")
-    print("[DEBUG] WEBHOOK_URL:", WEBHOOK_URL)
 
-    # Удаляем старый webhook и дропаем накопившиеся апдейты
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         print("[DEBUG] Старый webhook удалён")
-    except Exception as e:
-        print("[DEBUG] Ошибка при удалении webhook:", e)
+    except Exception:
+        pass
 
-    # Ставим новый webhook
-    try:
-        await bot.set_webhook(WEBHOOK_URL, allowed_updates=["message"])
-        print("[DEBUG] Новый webhook установлен")
-    except Exception as e:
-        print("[DEBUG] Ошибка при установке webhook:", e)
+    await bot.set_webhook(WEBHOOK_URL, allowed_updates=["message"])
+    print("[DEBUG] Новый webhook установлен")
 
-    # Запускаем цикл авто-сигналов
     asyncio.create_task(auto_signal_loop())
+    asyncio.create_task(market_overview_loop())
 
 
 @app.on_event("shutdown")
@@ -138,26 +152,22 @@ async def telegram_webhook(request: Request):
     return {"ok": True}
 
 
-# -----------------------------
+# =============================
 # Фильтр по старшему ТФ (4h)
-# -----------------------------
+# =============================
 def htf_allows_trade(symbol: str, tf_signal: dict, htf: str = "4h") -> bool:
-    """
-    Разрешает авто-сделку только если сигнал на старшем ТФ совпадает по направлению.
-    tf_signal — результат analyze_symbol(symbol, "1h")
-    """
     try:
         htf_data = analyze_symbol(symbol, htf)
 
         if not htf_data or "signal" not in htf_data:
-            print("[HTF] Нет данных старшего ТФ")
+            print("[HTF] Нет данных")
             return False
 
         tf_dir = tf_signal.get("signal")
         htf_dir = htf_data.get("signal")
 
         if tf_dir == htf_dir and tf_dir in ("LONG", "SHORT"):
-            print(f"[HTF] Подтверждение: 1h={tf_dir}, 4h={htf_dir}")
+            print(f"[HTF] Подтверждение {tf_dir}")
             return True
 
         print(f"[HTF] Блокировка: 1h={tf_dir}, 4h={htf_dir}")
@@ -168,12 +178,11 @@ def htf_allows_trade(symbol: str, tf_signal: dict, htf: str = "4h") -> bool:
         return False
 
 
-# -----------------------------
-# Авто-сигналы (BTCUSDT 1h, сила ≥ 3, только по тренду 4h)
-# -----------------------------
+# =============================
+# Сильные авто-сигналы (сила ≥ 3 + 4h)
+# =============================
 async def auto_signal_loop():
-    # Ждём 1 час до первого авто-сигнала, чтобы не спамить сразу после запуска
-    await asyncio.sleep(3600)
+    await asyncio.sleep(60)
 
     while True:
         try:
@@ -181,26 +190,31 @@ async def auto_signal_loop():
             tf = "1h"
 
             data = analyze_symbol(symbol, tf)
+
             if "error" in data:
-                print(f"[AUTO] Ошибка анализа: {data['error']}")
+                print("[AUTO] Ошибка:", data["error"])
                 await asyncio.sleep(3600)
                 continue
 
-            # --- ФИЛЬТР ПО СИЛЕ ---
             strength = int(data.get("strength", 0))
+
             if strength < 3:
-                print(f"[AUTO] Пропуск по силе, сила={strength}")
+                print(f"[AUTO] Пропуск по силе: {strength}")
                 await asyncio.sleep(3600)
                 continue
 
-            # --- ФИЛЬТР ПО СТАРШЕМУ ТФ (4h) ---
             if not htf_allows_trade(symbol, data, htf="4h"):
-                print("[AUTO] Пропуск по HTF (4h не подтверждает направление)")
+                print("[AUTO] Пропуск по HTF")
                 await asyncio.sleep(3600)
                 continue
 
-            # Формируем текст сигнала с пометкой, что учтён 4h
-            text = "<b>[AUTO]</b>\n" + format_signal_text(symbol, tf, data, htf_used=True)
+            direction = data.get("signal")
+            emoji = "🟢" if direction == "LONG" else "🔴"
+
+            text = (
+                f"{emoji} <b>[STRONG {direction}]</b>\n" +
+                format_signal_text(symbol, tf, data, htf_used=True)
+            )
 
             if CHAT_ID != 0:
                 await bot.send_message(CHAT_ID, text)
@@ -208,5 +222,33 @@ async def auto_signal_loop():
         except Exception as e:
             print("AUTO SIGNAL ERROR:", e)
 
-        # Интервал авто-сигналов = 1 час
         await asyncio.sleep(3600)
+
+
+# =============================
+# Обзор рынка каждые 15 минут (BTC + ETH)
+# =============================
+async def market_overview_loop():
+    await asyncio.sleep(60)
+
+    symbols = ["BTCUSDT", "ETHUSDT"]
+    tf = "1h"
+
+    while True:
+        try:
+            for symbol in symbols:
+                data = analyze_symbol(symbol, tf)
+
+                if "error" in data:
+                    print(f"[OVERVIEW] Ошибка {symbol}: {data['error']}")
+                    continue
+
+                text = format_overview_text(symbol, tf, data)
+
+                if CHAT_ID != 0:
+                    await bot.send_message(CHAT_ID, text)
+
+        except Exception as e:
+            print("[OVERVIEW] ERROR:", e)
+
+        await asyncio.sleep(900)  # 15 минут
