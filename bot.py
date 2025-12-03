@@ -23,7 +23,11 @@ WEBHOOK_PATH = "/webhook"
 
 # ================== BOT ==================
 
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
@@ -40,7 +44,7 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
     except Exception:
         return None
 
-    if not isinstance(data, list):
+    if not isinstance(data, list) or len(data) < 50:
         return None
 
     df = pd.DataFrame(data, columns=[
@@ -57,7 +61,6 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
 
 def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     df = get_ohlcv(symbol, tf)
-
     if df is None or len(df) < 50:
         return {"error": "Недостаточно данных"}
 
@@ -209,12 +212,19 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
+    print("STARTUP OK")
+
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
+
+    await dp.startup()  # ✅ ВАЖНО — без этого контейнер умирал
+
     asyncio.create_task(auto_signal_loop())
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    print("SHUTDOWN OK")
+    await dp.shutdown()
     await bot.session.close()
 
 @app.post(WEBHOOK_PATH)
@@ -223,4 +233,3 @@ async def webhook(request: Request):
     update = Update(**data)
     await dp.feed_update(bot, update)
     return {"ok": True}
-
