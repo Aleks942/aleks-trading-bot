@@ -45,7 +45,11 @@ class DataSource:
         }
 
         try:
-            r = requests.get(url, params=params, timeout=5)
+           headers = {
+    "User-Agent": "Mozilla/5.0"
+}
+r = requests.get(url, params=params, headers=headers, timeout=10)
+
             data = r.json()
         except Exception:
             return None
