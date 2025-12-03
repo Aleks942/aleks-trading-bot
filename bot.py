@@ -69,11 +69,9 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
 
     ema20 = close.ewm(span=20).mean().iloc[-1]
     ema50 = close.ewm(span=50).mean().iloc[-1]
-
     trend = "up" if ema20 > ema50 else "down"
 
     rsi = close.pct_change().rolling(14).mean().iloc[-1]
-
     macd = close.ewm(span=12).mean() - close.ewm(span=26).mean()
     macd_hist = macd.iloc[-1]
 
@@ -161,21 +159,15 @@ async def signal_cmd(message: Message):
 async def auto_signal_loop():
     symbols = ["BTCUSDT", "ETHUSDT"]
     tf = "1h"
-    htf = "4h"
     min_strength = 3
-
     last_sent = {}
 
     while True:
         try:
             for symbol in symbols:
                 data = analyze_symbol(symbol, tf)
-                htf_data = analyze_symbol(symbol, htf)
 
-                if "error" in data or "error" in htf_data:
-                    continue
-
-                if data["signal"] != htf_data["signal"]:
+                if "error" in data:
                     continue
 
                 if data["strength"] < min_strength:
@@ -191,7 +183,7 @@ async def auto_signal_loop():
 
                 text = (
                     f"{color} <b>СИЛЬНЫЙ СИГНАЛ {symbol}</b>\n"
-                    f"TF: {tf} | HTF: {htf}\n\n"
+                    f"TF: {tf}\n\n"
                     f"Направление: {data['signal']}\n"
                     f"Сила: {data['strength']}\n\n"
                     "Контекст:\n" +
@@ -217,14 +209,11 @@ async def on_startup():
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
 
-    await dp.startup()  # ✅ ВАЖНО — без этого контейнер умирал
-
     asyncio.create_task(auto_signal_loop())
 
 @app.on_event("shutdown")
 async def on_shutdown():
     print("SHUTDOWN OK")
-    await dp.shutdown()
     await bot.session.close()
 
 @app.post(WEBHOOK_PATH)
