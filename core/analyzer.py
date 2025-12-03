@@ -6,20 +6,25 @@ from core.phases import detect_market_phase
 from core.volatility import analyze_volatility
 
 
+def safe_dict(x):
+    if isinstance(x, dict):
+        return x
+    return {}
+
+
 def analyze_symbol(symbol: str, tf: str):
     try:
-        # 1. Получаем данные
+        # 1. Данные
         df = get_ohlcv(symbol, tf)
-
         if df is None or len(df) < 20:
             return {"error": "Недостаточно данных"}
 
-        # 2. Аналитические модули (ВСЕ С ЗАЩИТОЙ)
-        indi = calculate_indicators(df) or {}
-        div = detect_divergence(df) or {}
-        mf = analyze_moneyflow(df) or {}
-        phase = detect_market_phase(df) or {}
-        vola = analyze_volatility(df) or {}
+        # 2. Модули (ЖЁСТКАЯ ЗАЩИТА)
+        indi = safe_dict(calculate_indicators(df))
+        div = safe_dict(detect_divergence(df))
+        mf = safe_dict(analyze_moneyflow(df))
+        phase = safe_dict(detect_market_phase(df))
+        vola = safe_dict(analyze_volatility(df))
 
         # 3. Причины
         reasons = []
@@ -33,14 +38,22 @@ def analyze_symbol(symbol: str, tf: str):
             reasons.append("Тренд: боковой")
 
         # MACD
-        macd_hist = float(indi.get("macd_hist", 0))
+        try:
+            macd_hist = float(indi.get("macd_hist", 0))
+        except Exception:
+            macd_hist = 0
+
         if macd_hist > 0:
             reasons.append("MACD: бычий импульс")
         else:
             reasons.append("MACD: медвежий импульс")
 
         # RSI
-        rsi = float(indi.get("rsi", 50))
+        try:
+            rsi = float(indi.get("rsi", 50))
+        except Exception:
+            rsi = 50
+
         if rsi > 60:
             reasons.append("RSI показывает покупку")
         elif rsi < 40:
@@ -49,8 +62,13 @@ def analyze_symbol(symbol: str, tf: str):
             reasons.append("RSI нейтральный")
 
         # SuperTrend
-        supertrend = float(indi.get("supertrend", 0))
-        last_price = float(df["close"].iloc[-1])
+        try:
+            supertrend = float(indi.get("supertrend", 0))
+            last_price = float(df["close"].iloc[-1])
+        except Exception:
+            supertrend = 0
+            last_price = 0
+
         if supertrend < last_price:
             reasons.append("SuperTrend: рынок над линией (бычий)")
         else:
@@ -123,3 +141,4 @@ def analyze_symbol(symbol: str, tf: str):
 
     except Exception as e:
         return {"error": str(e)}
+
