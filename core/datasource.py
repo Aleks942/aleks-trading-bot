@@ -1,10 +1,9 @@
 import requests
 import pandas as pd
-from datetime import datetime
 
 
 # =============================
-# СЛОВАРЬ СИМВОЛОВ
+# СИМВОЛЫ
 # =============================
 COINGECKO_SYMBOLS = {
     "BTCUSDT": "bitcoin",
@@ -18,16 +17,16 @@ COINGECKO_SYMBOLS = {
 
 
 # =============================
-# КОНВЕРТАЦИЯ TF → DAYS
+# TF → DAYS (ТОЛЬКО РАЗРЕШЁННЫЕ)
 # =============================
 def tf_to_days(tf: str) -> int:
     if tf == "1h":
-        return 2        # ~48 часов
+        return 1        # ✅ разрешено
     if tf == "4h":
         return 7
     if tf == "1d":
         return 90
-    return 2
+    return 7
 
 
 # =============================
@@ -57,16 +56,16 @@ def get_ohlcv(symbol: str, timeframe: str):
     except Exception:
         return None
 
-    if not isinstance(data, list) or len(data) == 0:
+    if not isinstance(data, list) or len(data) < 20:
         return None
 
-    # Формат CoinGecko:
+    # Формат:
     # [timestamp, open, high, low, close]
     df = pd.DataFrame(data, columns=[
         "timestamp", "open", "high", "low", "close"
     ])
 
-    df["volume"] = 0.0  # Заглушка под твой анализатор
+    df["volume"] = 0.0
     df["timestamp"] = df["timestamp"] // 1000
     df.set_index("timestamp", inplace=True)
     df = df.astype(float)
