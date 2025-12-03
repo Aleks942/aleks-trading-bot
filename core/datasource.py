@@ -17,7 +17,7 @@ def convert_tf_to_bybit(tf: str) -> str:
         "1d": "D",
         "1w": "W"
     }
-    return mapping.get(tf, "60")  # по умолчанию 1h
+    return mapping.get(tf, "60")
 
 
 # =============================
@@ -44,12 +44,12 @@ class DataSource:
             "limit": 200
         }
 
-        try:
-           headers = {
-    "User-Agent": "Mozilla/5.0"
-}
-r = requests.get(url, params=params, headers=headers, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
 
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=10)
             data = r.json()
         except Exception:
             return None
@@ -85,12 +85,12 @@ r = requests.get(url, params=params, headers=headers, timeout=10)
             "limit": 500
         }
 
-        try:
-            headers = {
-    "User-Agent": "Mozilla/5.0"
-}
-r = requests.get(url, params=params, headers=headers, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
 
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=10)
             data = r.json()
         except Exception:
             return None
@@ -119,17 +119,13 @@ def get_ohlcv(symbol: str, timeframe: str):
 
     # 1. Пробуем BYBIT
     df = ds.get_klines_bybit(symbol, timeframe)
-
     if df is not None and len(df) >= 50:
         return df
 
-    # 2. Если BYBIT не дал данных — BINANCE
+    # 2. Если BYBIT не дал — BINANCE
     df = ds.get_klines_binance(symbol, timeframe)
-
     if df is not None and len(df) >= 50:
         return df
 
     # 3. Полный фэйл
     return None
-
-       
