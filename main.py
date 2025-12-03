@@ -292,7 +292,15 @@ async def signal_cmd(message: Message):
 async def auto_loop():
     print("AUTO LOOP STARTED ✅")
 
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+    symbols = [
+    "BTCUSDT", "ETHUSDT",          # ориентиры
+    "SOLUSDT", "BNBUSDT",
+    "OPUSDT", "ARBUSDT",
+    "DOGEUSDT", "XRPUSDT", "AVAXUSDT",
+    "STRKUSDT", "ZKUSDT",
+    "NEARUSDT", "1INCHUSDT", "NOTUSDT"
+]
+
     tf = "1h"
     min_strength = 3          # фильтр по силе
     min_atr_ratio = 0.003     # фильтр по волатильности (~0.3% и выше)
