@@ -12,10 +12,6 @@ from aiogram.client.default import DefaultBotProperties
 
 from fastapi import FastAPI, Request
 
-# =============== GLOBAL LOCK =================
-
-STARTUP_LOCK = False
-
 # ================== ENV ======================
 
 load_dotenv()
@@ -36,26 +32,43 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# ================== DATA =====================
+# ================== BINANCE VIA PROXY =====================
+
+PROXY_BASE = "https://round-moon-6916.aleks-aw1978.workers.dev"
 
 def get_ohlcv(symbol="BTCUSDT", tf="1h"):
+    tf_map = {
+        "1m": "1m",
+        "5m": "5m",
+        "15m": "15m",
+        "30m": "30m",
+        "1h": "1h",
+        "4h": "4h",
+        "1d": "1d"
+    }
+
+    interval = tf_map.get(tf, "1h")
+
+    url = PROXY_BASE + "/api/v3/klines"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": 200
+    }
+
     try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/klines",
-            params={"symbol": symbol, "interval": tf, "limit": 200},
-            timeout=10
-        )
+        r = requests.get(url, params=params, timeout=10)
         data = r.json()
     except Exception as e:
-        print("OHLCV REQUEST ERROR:", e)
+        print("PROXY REQUEST ERROR:", e)
         return None
 
     if not isinstance(data, list):
-        print("BINANCE NOT LIST:", data)
+        print("BINANCE VIA PROXY BAD RESPONSE:", data)
         return None
 
     if len(data) < 50:
-        print("BINANCE LITTLE DATA:", symbol, tf, len(data))
+        print("BINANCE VIA PROXY LITTLE DATA:", symbol, tf)
         return None
 
     try:
@@ -66,8 +79,9 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
         df["close"] = df["close"].astype(float)
         df["volume"] = df["volume"].astype(float)
         return df
+
     except Exception as e:
-        print("DF PARSE ERROR:", e)
+        print("PROXY DF ERROR:", e)
         return None
 
 # ================== ANALYSIS =================
@@ -124,142 +138,4 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     elif rsi < 45:
         score -= 1
         reasons.append("RSI ниже 45")
-    else:
-        reasons.append("RSI нейтрален")
 
-    if volume_ratio > 1.2:
-        score += 1
-        reasons.append("Объём выше среднего")
-
-    if score >= 3:
-        signal = "LONG"
-    elif score <= -3:
-        signal = "SHORT"
-    else:
-        signal = "NEUTRAL"
-
-    return {
-        "signal": signal,
-        "strength": abs(score),
-        "reasons": reasons
-    }
-
-# ================== COMMANDS ==================
-
-@router.message(Command("start"))
-async def start_cmd(message: Message):
-    await message.answer("✅ Бот онлайн\nКоманды:\n/signal BTCUSDT 1h")
-
-@router.message(Command("signal"))
-async def signal_cmd(message: Message):
-    parts = message.text.split()
-    symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
-    tf = parts[2] if len(parts) > 2 else "1h"
-
-    data = analyze_symbol(symbol, tf)
-
-    if "error" in data:
-        await message.answer("❌ Нет данных с Binance")
-        return
-
-    text = (
-        f"<b>Сигнал {symbol}</b>\nTF: {tf}\n\n"
-        f"Направление: <b>{data['signal']}</b>\n"
-        f"Сила: <b>{data['strength']}</b>\n\n"
-        "Причины:\n" + "\n".join(f"- {r}" for r in data["reasons"])
-    )
-
-    await message.answer(text)
-
-# ================== AUTO LOOP =================
-
-async def auto_signal_loop():
-    print("AUTO LOOP STARTED ✅")
-
-    symbols = ["BTCUSDT", "ETHUSDT"]
-    tf = "1h"
-    min_strength = 1   # временно ослаблено
-
-    last_sent = {}
-
-    while True:
-        print("AUTO LOOP TICK...")
-
-        try:
-            for symbol in symbols:
-                ltf = analyze_symbol(symbol, tf)
-
-                if "error" in ltf:
-                    continue
-
-                if ltf["strength"] < min_strength:
-                    continue
-
-                key = f"{symbol}_{ltf['signal']}"
-                if key in last_sent:
-                    continue
-
-                last_sent[key] = True
-
-                color = "🟢" if ltf["signal"] == "LONG" else "🔴"
-
-                text = (
-                    f"{color} <b>СИЛЬНЫЙ СИГНАЛ {symbol}</b>\n"
-                    f"TF: {tf}\n\n"
-                    f"Направление: {ltf['signal']}\n"
-                    f"Сила: {ltf['strength']}\n\n"
-                    "Контекст:\n" +
-                    "\n".join(f"- {r}" for r in ltf["reasons"])
-                )
-
-                print("SEND:", symbol, ltf["signal"])
-                await bot.send_message(CHAT_ID, text)
-
-            await asyncio.sleep(900)
-
-        except Exception as e:
-            print("AUTO LOOP ERROR:", e)
-            await asyncio.sleep(30)
-
-# ================== FASTAPI ==================
-
-app = FastAPI()
-
-@app.on_event("startup")
-async def on_startup():
-    global STARTUP_LOCK
-
-    print("STARTUP OK ✅")
-
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.set_webhook(WEBHOOK_URL)
-        print("WEBHOOK SET ✅")
-    except Exception as e:
-        print("WEBHOOK ERROR:", e)
-
-    if not STARTUP_LOCK:
-        STARTUP_LOCK = True
-        try:
-            await bot.send_message(CHAT_ID, "✅ Бот запущен. Автосигналы активны.")
-            print("START MESSAGE SENT ✅")
-        except Exception as e:
-            print("START MESSAGE ERROR:", e)
-
-    asyncio.create_task(auto_signal_loop())
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    print("SHUTDOWN OK")
-    await bot.session.close()
-
-@app.post(WEBHOOK_PATH)
-async def webhook(request: Request):
-    data = await request.json()
-    update = Update(**data)
-    await dp.feed_update(bot, update)
-    return {"ok": True}
-
-@app.get("/")
-async def health():
-    return {"status": "ok"}
