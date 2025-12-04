@@ -43,11 +43,7 @@ TF_MAP = {
     "1d": "1D",
 }
 
-def get_ohlcv(symbol: str = "BTCUSDT", tf: str = "1h"):
-    """
-    Берём свечи с OKX: instId = BTC-USDT, ETH-USDT и т.п.
-    Возвращаем DataFrame с колонками: time, open, high, low, close, volume.
-    """
+def get_ohlcv(symbol="BTCUSDT", tf="1h"):
     try:
         inst = symbol.replace("USDT", "-USDT")
         bar = TF_MAP.get(tf, "1H")
@@ -63,12 +59,10 @@ def get_ohlcv(symbol: str = "BTCUSDT", tf: str = "1h"):
         data = r.json()
 
         if "data" not in data:
-            print("OKX BAD RESPONSE:", data)
             return None
 
         candles = data["data"]
         if not candles or len(candles) < 50:
-            print("OKX LITTLE DATA:", symbol, tf, len(candles))
             return None
 
         df = pd.DataFrame(candles, columns=[
@@ -82,20 +76,17 @@ def get_ohlcv(symbol: str = "BTCUSDT", tf: str = "1h"):
         df["close"] = df["close"].astype(float)
         df["volume"] = df["volume"].astype(float)
 
-        # OKX отдаёт от последней к первой, разворачиваем
         df = df.iloc[::-1].reset_index(drop=True)
-
         return df
 
-    except Exception as e:
-        print("OKX ERROR:", e)
+    except:
         return None
 
 # ================== ANALYSIS ======================
 
-def analyze_symbol(symbol: str = "BTCUSDT", tf: str = "1h"):
+def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     df = get_ohlcv(symbol, tf)
-    if df is None or len(df) < 50:
+    if df is None:
         return {"error": "no data"}
 
     close = df["close"]
@@ -105,87 +96,62 @@ def analyze_symbol(symbol: str = "BTCUSDT", tf: str = "1h"):
 
     last_close = close.iloc[-1]
 
-    # -------- ТРЕНД (EMA20 / EMA50) --------
     ema20 = close.ewm(span=20).mean().iloc[-1]
     ema50 = close.ewm(span=50).mean().iloc[-1]
     trend = "up" if ema20 > ema50 else "down"
 
-    # -------- RSI 14 --------
     delta = close.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
 
     avg_gain = gain.rolling(14).mean()
     avg_loss = loss.rolling(14).mean()
-
     rs = avg_gain / avg_loss
-    rsi_series = 100 - (100 / (1 + rs))
-    rsi = rsi_series.iloc[-1]
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.iloc[-1]
 
-    # если RSI ещё не посчитался по окну — нейтраль
-    if pd.isna(rsi):
-        rsi = 50.0
-
-    # -------- ATR 14 --------
     prev_close = close.shift(1)
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
 
-    atr_series = tr.rolling(14).mean()
-    atr = atr_series.iloc[-1]
+    atr = tr.rolling(14).mean().iloc[-1]
+    if atr is None or atr <= 0:
+        return {"error": "no volatility"}
 
-    if pd.isna(atr) or atr <= 0:
-        return {"error": "no_volatility"}
+    atr_ratio = atr / last_close if last_close > 0 else 0
 
-    atr_ratio = atr / last_close if last_close > 0 else 0.0  # относительная волатильность
-
-    # -------- ОБЪЁМ --------
     avg_vol = volume.rolling(20).mean().iloc[-2]
     last_vol = volume.iloc[-1]
     volume_ratio = last_vol / avg_vol if avg_vol > 0 else 1
 
-    # -------- СКОРАЯ ОЦЕНКА (score) --------
     score = 0
     reasons = []
 
-    # тренд
     if trend == "up":
         score += 1
-        reasons.append("Тренд восходящий (EMA20 > EMA50)")
+        reasons.append("Тренд восходящий")
     else:
         score -= 1
-        reasons.append("Тренд нисходящий (EMA20 < EMA50)")
+        reasons.append("Тренд нисходящий")
 
-    # RSI
     if rsi > 60:
         score += 1
-        reasons.append("RSI выше 60 (сильные покупатели)")
+        reasons.append("RSI выше 60")
     elif rsi < 40:
         score -= 1
-        reasons.append("RSI ниже 40 (сильные продавцы)")
-    else:
-        reasons.append("RSI в балансе")
+        reasons.append("RSI ниже 40")
 
-    # объём
     if volume_ratio > 1.3:
         score += 1
-        reasons.append("Объём значительно выше среднего")
-    elif volume_ratio < 0.7:
-        score -= 1
-        reasons.append("Объём ниже среднего (интерес слабый)")
+        reasons.append("Объём выше среднего")
 
-    # волатильность (анти-флет)
     if atr_ratio < 0.003:
-        # очень узкий диапазон (<0.3%)
-        reasons.append("Волатильность очень низкая (флет)")
-        # зафлэченный рынок — штрафуем
         score -= 1
-    else:
-        reasons.append(f"Волатильность достаточная (ATR ≈ {atr_ratio*100:.2f}% от цены)")
+        reasons.append("Флет")
 
-    # -------- ИТОГОВЫЙ СИГНАЛ --------
     if score >= 3:
         signal = "LONG"
     elif score <= -3:
@@ -193,16 +159,10 @@ def analyze_symbol(symbol: str = "BTCUSDT", tf: str = "1h"):
     else:
         signal = "NEUTRAL"
 
-    strength = abs(score)
-
-    # -------- РАСЧЁТ УРОВНЕЙ (ENTRY / SL / TP) --------
-    risk_mult = 1.5  # множитель ATR
+    risk_mult = 1.5
     entry = last_close
 
-    sl = None
-    tp1 = None
-    tp2 = None
-
+    sl = tp1 = tp2 = None
     if signal == "LONG":
         sl = entry - risk_mult * atr
         tp1 = entry + risk_mult * atr
@@ -212,41 +172,46 @@ def analyze_symbol(symbol: str = "BTCUSDT", tf: str = "1h"):
         tp1 = entry - risk_mult * atr
         tp2 = entry - 2 * risk_mult * atr
 
-    # -------- КАТЕГОРИЯ СИЛЫ --------
-    if strength >= 4:
-        strength_label = "сильный"
-    elif strength == 3:
-        strength_label = "выше среднего"
-    elif strength == 2:
-        strength_label = "умеренный"
-    else:
-        strength_label = "слабый/нейтральный"
-
     return {
         "signal": signal,
-        "strength": strength,
-        "strength_label": strength_label,
+        "strength": abs(score),
         "reasons": reasons,
         "entry": float(entry),
-        "sl": float(sl) if sl is not None else None,
-        "tp1": float(tp1) if tp1 is not None else None,
-        "tp2": float(tp2) if tp2 is not None else None,
+        "sl": float(sl) if sl else None,
+        "tp1": float(tp1) if tp1 else None,
+        "tp2": float(tp2) if tp2 else None,
         "atr": float(atr),
         "atr_ratio": float(atr_ratio),
         "rsi": float(rsi),
         "volume_ratio": float(volume_ratio),
     }
 
+# ================== СТАТУС ВХОДА ======================
+
+def entry_status(data):
+    rsi = data["rsi"]
+    atr_ratio = data["atr_ratio"]
+    volume_ratio = data["volume_ratio"]
+
+    if rsi >= 70 or rsi <= 30:
+        return "❌ ОПАСНО — возможен разворот"
+
+    if rsi > 60 or rsi < 40:
+        return "⚠️ ПОЗДНО — ждать откат"
+
+    if 40 <= rsi <= 55 and atr_ratio >= 0.003 and volume_ratio >= 1:
+        return "✅ МОЖНО — вход от отката"
+
+    return "⚠️ НЕОПРЕДЕЛЁННО"
+
 # ================== COMMANDS ======================
 
 @router.message(Command("start"))
 async def start_cmd(message: Message):
     await message.answer(
-        "✅ Бот онлайн\n"
-        "Источник данных: OKX (свечи)\n\n"
-        "Команда:\n"
+        "✅ Бот онлайн\nИсточник: OKX\n\n"
         "/signal BTCUSDT 1h\n\n"
-        "Доступные пары в авто-режиме: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT (1h)"
+        "Авто-пары: BTC ETH SOL BNB STRK ZK NEAR 1INCH NOT"
     )
 
 @router.message(Command("signal"))
@@ -258,113 +223,86 @@ async def signal_cmd(message: Message):
     data = analyze_symbol(symbol, tf)
 
     if "error" in data:
-        await message.answer("❌ Нет данных или слишком мало волатильности (флет)")
+        await message.answer("❌ Нет данных")
         return
 
-    base = (
-        f"<b>Сигнал {symbol}</b>\nTF: {tf}\n\n"
+    status = entry_status(data)
+
+    text = (
+        f"<b>Сигнал {symbol}</b>\n"
+        f"TF: {tf}\n\n"
         f"Направление: <b>{data['signal']}</b>\n"
-        f"Сила: <b>{data['strength']} ({data['strength_label']})</b>\n\n"
-    )
-
-    levels = ""
-    if data["signal"] != "NEUTRAL" and data["sl"] is not None:
-        levels = (
-            "Уровни:\n"
-            f"- Вход: <b>{data['entry']:.2f}</b>\n"
-            f"- SL: <b>{data['sl']:.2f}</b>\n"
-            f"- TP1: <b>{data['tp1']:.2f}</b>\n"
-            f"- TP2: <b>{data['tp2']:.2f}</b>\n\n"
-        )
-
-    extra = (
-        f"ATR: {data['atr']:.2f} (~{data['atr_ratio']*100:.2f}% от цены)\n"
+        f"Сила: <b>{data['strength']}</b>\n"
+        f"Статус: <b>{status}</b>\n\n"
+        f"Вход: {data['entry']:.4f}\n"
+        f"SL: {data['sl']:.4f}\n"
+        f"TP1: {data['tp1']:.4f}\n"
+        f"TP2: {data['tp2']:.4f}\n\n"
         f"RSI: {data['rsi']:.1f}\n"
-        f"Объём / средний: {data['volume_ratio']:.2f}x\n\n"
+        f"ATR%: {data['atr_ratio']*100:.2f}%\n"
+        f"VOL x: {data['volume_ratio']:.2f}\n\n"
+        "Причины:\n" +
+        "\n".join(f"- {r}" for r in data["reasons"])
     )
 
-    reasons_txt = "Причины:\n" + "\n".join(f"- {r}" for r in data["reasons"])
+    await message.answer(text)
 
-    await message.answer(base + levels + extra + reasons_txt)
-
-# ================== AUTO LOOP (BTC, ETH, SOL, BNB) ======================
+# ================== AUTO LOOP ======================
 
 async def auto_loop():
-    print("AUTO LOOP STARTED ✅")
-
     symbols = [
-    "BTCUSDT", "ETHUSDT",          # ориентиры
-    "SOLUSDT", "BNBUSDT",
-    "OPUSDT", "ARBUSDT",
-    "DOGEUSDT", "XRPUSDT", "AVAXUSDT",
-    "STRKUSDT", "ZKUSDT",
-    "NEARUSDT", "1INCHUSDT", "NOTUSDT"
-]
+        "BTCUSDT", "ETHUSDT",
+        "SOLUSDT", "BNBUSDT",
+        "STRKUSDT", "ZKUSDT",
+        "NEARUSDT", "1INCHUSDT", "NOTUSDT"
+    ]
 
     tf = "1h"
-    min_strength = 3          # фильтр по силе
-    min_atr_ratio = 0.003     # фильтр по волатильности (~0.3% и выше)
+    min_strength = 3
+    min_atr_ratio = 0.003
     last_sent = {}
 
     while True:
-        try:
-            for symbol in symbols:
-                data = analyze_symbol(symbol, tf)
+        for symbol in symbols:
+            data = analyze_symbol(symbol, tf)
+            if "error" in data:
+                continue
 
-                if "error" in data:
-                    continue
+            if data["signal"] == "NEUTRAL":
+                continue
 
-                if data["signal"] == "NEUTRAL":
-                    continue
+            if data["strength"] < min_strength:
+                continue
 
-                if data["strength"] < min_strength:
-                    continue
+            if data["atr_ratio"] < min_atr_ratio:
+                continue
 
-                if data.get("atr_ratio", 0) < min_atr_ratio:
-                    continue
+            status = entry_status(data)
+            if "ОПАСНО" in status:
+                continue
 
-                key = f"{symbol}_{data['signal']}"
-                if key in last_sent:
-                    continue
+            key = f"{symbol}_{data['signal']}"
+            if key in last_sent:
+                continue
 
-                last_sent[key] = True
+            last_sent[key] = True
+            color = "🟢" if data["signal"] == "LONG" else "🔴"
 
-                color = "🟢" if data["signal"] == "LONG" else "🔴"
+            text = (
+                f"{color} <b>СИГНАЛ {symbol}</b>\n"
+                f"TF: {tf}\n\n"
+                f"Направление: {data['signal']}\n"
+                f"Сила: {data['strength']}\n"
+                f"Статус: {status}\n\n"
+                f"Вход: {data['entry']:.4f}\n"
+                f"SL: {data['sl']:.4f}\n"
+                f"TP1: {data['tp1']:.4f}\n"
+                f"TP2: {data['tp2']:.4f}\n"
+            )
 
-                levels = ""
-                if data["sl"] is not None:
-                    levels = (
-                        "Уровни:\n"
-                        f"- Вход: <b>{data['entry']:.2f}</b>\n"
-                        f"- SL: <b>{data['sl']:.2f}</b>\n"
-                        f"- TP1: <b>{data['tp1']:.2f}</b>\n"
-                        f"- TP2: <b>{data['tp2']:.2f}</b>\n\n"
-                    )
+            await bot.send_message(CHAT_ID, text)
 
-                extra = (
-                    f"ATR: {data['atr']:.2f} (~{data['atr_ratio']*100:.2f}% от цены)\n"
-                    f"RSI: {data['rsi']:.1f}\n"
-                    f"Объём / средний: {data['volume_ratio']:.2f}x\n\n"
-                )
-
-                text = (
-                    f"{color} <b>СИЛЬНЫЙ СИГНАЛ {symbol}</b>\n"
-                    f"TF: {tf}\n\n"
-                    f"Направление: <b>{data['signal']}</b>\n"
-                    f"Сила: <b>{data['strength']} ({data['strength_label']})</b>\n\n"
-                    f"{levels}"
-                    f"{extra}"
-                    "Причины:\n" +
-                    "\n".join(f"- {r}" for r in data["reasons"])
-                )
-
-                await bot.send_message(CHAT_ID, text)
-
-            await asyncio.sleep(900)
-
-        except Exception as e:
-            print("AUTO LOOP ERROR:", e)
-            await asyncio.sleep(30)
+        await asyncio.sleep(900)
 
 # ================== FASTAPI ======================
 
@@ -372,22 +310,13 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    print("STARTUP OK ✅")
-
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await bot.set_webhook(WEBHOOK_URL)
-        print("WEBHOOK SET ✅")
-    except Exception as e:
-        print("WEBHOOK ERROR:", e)
-
-    # без стартового сообщения здесь, чтобы не было дублей при рестартах
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(WEBHOOK_URL)
     asyncio.create_task(auto_loop())
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    data = await request.json()
-    update = Update(**data)
+    update = Update(**await request.json())
     await dp.feed_update(bot, update)
     return {"ok": True}
 
