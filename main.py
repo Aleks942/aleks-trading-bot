@@ -12,28 +12,38 @@ from aiogram.client.default import DefaultBotProperties
 
 from fastapi import FastAPI, Request
 
+# ================== ENV ======================
+
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
+# ================== BOT ======================
+
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
+
+# ================== TIMEFRAMES ======================
 
 TF_MAP = {
     "1m": "1m", "5m": "5m", "15m": "15m",
     "30m": "30m", "1h": "1H", "4h": "4H", "1d": "1D",
 }
 
+# ================== OKX DATA ======================
+
 def get_ohlcv(symbol="BTCUSDT", tf="1h"):
     try:
         inst = symbol.replace("USDT", "-USDT")
         bar = TF_MAP.get(tf, "1H")
+
         url = "https://www.okx.com/api/v5/market/candles"
         params = {"instId": inst, "bar": bar, "limit": 200}
+
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
 
@@ -55,6 +65,8 @@ def get_ohlcv(symbol="BTCUSDT", tf="1h"):
     except:
         return None
 
+# ================== ANALYSIS ======================
+
 def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     df = get_ohlcv(symbol, tf)
     if df is None or len(df) < 50:
@@ -74,6 +86,7 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     delta = close.diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
+
     rs = gain.rolling(14).mean() / loss.rolling(14).mean()
     rsi = 100 - (100 / (1 + rs))
     rsi = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50
@@ -156,6 +169,47 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
         "volume_ratio": float(volume_ratio)
     }
 
+# ================== BTC HEARTBEAT 15m ======================
+
+async def btc_heartbeat():
+    await asyncio.sleep(15)
+    while True:
+        try:
+            data = analyze_symbol("BTCUSDT", "15m")
+
+            if "error" in data:
+                await asyncio.sleep(900)
+                continue
+
+            if data["signal"] == "LONG":
+                mood = "🟢 Рынок под ЛОНГ"
+            elif data["signal"] == "SHORT":
+                mood = "🔴 Рынок под ШОРТ"
+            else:
+                mood = "⚪ Флет / ожидание"
+
+            text = (
+                f"⏱ <b>BTC контроль 15m</b>\n\n"
+                f"{mood}\n\n"
+                f"Сигнал: {data['signal']}\n"
+                f"Сила: {data['strength']}\n\n"
+                f"RSI: {round(data['rsi'],2)}\n"
+                f"ATR: {round(data['atr_ratio']*100,2)}%\n"
+                f"Объём: {round(data['volume_ratio'],2)}x\n\n"
+                "Причины:\n" +
+                "\n".join(f"- {r}" for r in data["reasons"])
+            )
+
+            await bot.send_message(CHAT_ID, text)
+
+            await asyncio.sleep(900)
+
+        except Exception as e:
+            print("BTC HEARTBEAT ERROR:", e)
+            await asyncio.sleep(60)
+
+# ================== COMMAND ======================
+
 @router.message(Command("signal"))
 async def signal_cmd(message: Message):
     parts = message.text.split()
@@ -193,7 +247,18 @@ async def signal_cmd(message: Message):
 
     await message.answer(text)
 
+# ================== FASTAPI ======================
+
 app = FastAPI()
+
+@app.on_event("startup")
+async def on_startup():
+    print("STARTUP ✅")
+
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(WEBHOOK_URL)
+
+    asyncio.create_task(btc_heartbeat())
 
 @app.post("/webhook")
 async def webhook(request: Request):
