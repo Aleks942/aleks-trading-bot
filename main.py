@@ -245,13 +245,12 @@ def run_bot():
 # START
 # =========================
 
-if __name__ == "__main__":
-    print("=== MAIN LOOP STARTED ===", flush=True)
-    try:
-        while True:
-            run_bot()
-            time.sleep(5)
-    except Exception as e:
-        print("FATAL ERROR:", e, flush=True)
-        while True:
-            time.sleep(60)
+Aleks Planner Bot, [08.12.2025 23:34]
+✅ Бот запущен
+Режим: Стратегия + Risk 1% + TP1/TP2
+Источник: CoinGecko + DEX
+
+Aleks Planner Bot, [08.12.2025 23:34]
+✅ Бот запущен
+Режим: Стратегия + Risk 1% + TP1/TP2
+Источник: CoinGecko + DEX
