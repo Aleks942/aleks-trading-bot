@@ -1,11 +1,12 @@
 import os
 import time
+import json
 import requests
 import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 4.1 — MULTI ALT STRATEGY) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 4.2 — ANTI DUPLICATES) ===", flush=True)
 
 # =========================
 # ПЕРЕМЕННЫЕ
@@ -16,6 +17,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 60 * 5  # 5 минут
+
+STATE_FILE = "last_signals.json"
 
 # ФИЛЬТРЫ ДЛЯ АЛЬТОВ (DEX)
 ALT_MIN_LIQUIDITY = 10_000
@@ -29,7 +32,7 @@ ATR_MULTIPLIER = 1.5
 # =========================
 # СПИСОК ТОКЕНОВ
 # =========================
-BIG_TOKENS = ["bitcoin", "ethereum"]  # фон рынка
+BIG_TOKENS = ["bitcoin", "ethereum"]
 
 ALT_TOKENS = [
     "solana",
@@ -50,6 +53,25 @@ COINGECKO_IDS = {
     "starknet": "starknet",
     "zksync-era": "zksync-era"
 }
+
+# =========================
+# СОСТОЯНИЕ СИГНАЛОВ (АНТИ-ДУБЛИКАТ)
+# =========================
+def load_last_states():
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_last_states(states):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(states, f)
+    except Exception as e:
+        print("STATE SAVE ERROR:", e, flush=True)
 
 # =========================
 # TELEGRAM
@@ -104,7 +126,7 @@ def calculate_rsi(df, period=14):
 def calculate_atr(df, period=14):
     high_low = df["close"].diff().abs()
     atr = high_low.rolling(period).mean().iloc[-1]
-    return round(float(atr), 4)
+    return round(float(atr), 6)
 
 # =========================
 # DEX — ОБЪЁМ И ЛИКВИДНОСТЬ
@@ -157,7 +179,7 @@ def make_signal(token: str):
         signal = "SHORT"
 
     if signal == "NEUTRAL":
-        return None
+        return {"signal": "NEUTRAL"}
 
     if signal == "LONG":
         stop = price - atr * ATR_MULTIPLIER
@@ -167,11 +189,10 @@ def make_signal(token: str):
         target = price - atr * ATR_MULTIPLIER
 
     return {
-        "token": token.upper(),
+        "signal": signal,
         "price": round(price, 6),
         "rsi": rsi,
         "atr": atr,
-        "signal": signal,
         "stop": round(stop, 6),
         "target": round(target, 6)
     }
@@ -180,12 +201,15 @@ def make_signal(token: str):
 # ОСНОВНОЙ ЦИКЛ
 # =========================
 def run_bot():
-    print("=== BOT LOOP STARTED (STEP 4.1 — MULTI ALT MODE) ===", flush=True)
+    print("=== BOT LOOP STARTED (STEP 4.2 — ANTI DUPLICATES) ===", flush=True)
+
+    last_states = load_last_states()
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            report = "<b>📈 СИГНАЛЫ (ШАГ 4.1 — АЛЬТЫ)</b>\n\n"
+
+            report = "<b>📈 СИГНАЛЫ (ШАГ 4.2 — АНТИ-ДУБЛИКАТЫ)</b>\n\n"
 
             # ФОН РЫНКА
             for big in BIG_TOKENS:
@@ -200,18 +224,29 @@ def run_bot():
             # АЛЬТЫ
             for alt in ALT_TOKENS:
                 dex_data = get_dex_data_alt(alt)
-                if not dex_data:
+                sig = make_signal(alt)
+
+                if not dex_data or not sig:
                     continue
 
-                sig = make_signal(alt)
-                if not sig:
+                current_signal = sig["signal"]
+                prev_signal = last_states.get(alt)
+
+                # ✅ АНТИ-ДУБЛИКАТ
+                if current_signal == prev_signal:
+                    continue
+
+                last_states[alt] = current_signal
+                save_last_states(last_states)
+
+                if current_signal == "NEUTRAL":
                     continue
 
                 signals_found = True
                 liquidity, volume, dex = dex_data
 
                 report += (
-                    f"<b>{sig['token']}</b>\n"
+                    f"<b>{alt.upper()}</b>\n"
                     f"СИГНАЛ: <b>{sig['signal']}</b>\n"
                     f"Цена: {sig['price']}$\n"
                     f"RSI: {sig['rsi']}\n"
@@ -224,7 +259,7 @@ def run_bot():
                 )
 
             if not signals_found:
-                report += "Пока нет торговых сигналов по альтам.\n\n"
+                report += "Нет новых сигналов (защита от дубликатов активна).\n\n"
 
             report += f"⏱ UTC: {now}"
             send_telegram(report)
@@ -239,11 +274,10 @@ def run_bot():
 # =========================
 if __name__ == "__main__":
     try:
-        print("=== MAIN ENTERED (STEP 4.1) ===", flush=True)
-        send_telegram("✅ ШАГ 4.1 активирован. Сигналы считаются по нескольким альтам.")
+        print("=== MAIN ENTERED (STEP 4.2) ===", flush=True)
+        send_telegram("✅ ШАГ 4.2 активирован. Включена защита от дубликатов сигналов.")
         run_bot()
     except Exception as e:
         print("🔥 FATAL START ERROR:", e, flush=True)
         while True:
             time.sleep(30)
-
