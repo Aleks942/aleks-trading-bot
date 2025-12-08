@@ -102,4 +102,117 @@ def get_dex_data_alt(query):
         data = requests.get(url, timeout=15).json()
         pairs = data.get("pairs", [])
         if not pairs:
+            return None
 
+        pair = sorted(
+            pairs,
+            key=lambda x: x.get("liquidity", {}).get("usd", 0),
+            reverse=True
+        )[0]
+
+        liq = pair.get("liquidity", {}).get("usd", 0)
+        vol = pair.get("volume", {}).get("h24", 0)
+        dex = pair.get("dexId")
+
+        # === УСИЛЕННЫЕ ПОРОГИ ===
+        if liq < ALT_MIN_LIQUIDITY or vol < ALT_MIN_VOLUME:
+            return None
+
+        return liq, vol, dex
+    except:
+        return None
+
+# ===== ОСНОВНОЙ ЦИКЛ =====
+def run_bot():
+    last_states = load_last_states()
+
+    while True:
+        try:
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            report = "<b>📈 СИГНАЛЫ (ШАГ 8 — УСИЛЕННЫЙ ФИЛЬТР ЛИКВ/ОБЪЁМ)</b>\n\n"
+
+            signals_found = False
+
+            for alt in ALT_TOKENS:
+                dex_data = get_dex_data_alt(alt)
+                df = get_ohlc_from_coingecko(alt)
+
+                if not dex_data or df is None:
+                    continue
+
+                rsi = calculate_rsi(df)
+                atr = calculate_atr(df)
+                price = float(df["close"].iloc[-1])
+
+                ema50 = calculate_ema(df, EMA_FAST)
+                ema200 = calculate_ema(df, EMA_SLOW)
+
+                trend = "FLAT"
+                if ema50 and ema200:
+                    trend = "UP" if ema50 > ema200 else "DOWN"
+                elif ema50:
+                    trend = "UP" if price > ema50 else "DOWN"
+
+                signal = "NEUTRAL"
+                if rsi < RSI_LONG_LEVEL and trend == "UP":
+                    signal = "LONG"
+                elif rsi > RSI_SHORT_LEVEL and trend == "DOWN":
+                    signal = "SHORT"
+
+                if last_states.get(alt) == signal:
+                    continue
+
+                last_states[alt] = signal
+                save_last_states(last_states)
+
+                if signal == "NEUTRAL":
+                    continue
+
+                liq, vol, dex = dex_data
+
+                stop = price - atr if signal == "LONG" else price + atr
+                tp1 = price + atr if signal == "LONG" else price - atr
+                tp2 = price + atr * 2 if signal == "LONG" else price - atr * 2
+
+                stop_dist = abs(price - stop)
+                position_size = RISK_USD / stop_dist
+                part = position_size / 2
+
+                profit_tp1 = abs(tp1 - price) * part
+                profit_tp2 = abs(tp2 - price) * part
+                total_profit = profit_tp1 + profit_tp2
+
+                signals_found = True
+
+                report += (
+                    f"<b>{alt.upper()}</b>\n"
+                    f"ТРЕНД: {trend}\n"
+                    f"RSI: {rsi}\n"
+                    f"EMA50: {ema50}\n"
+                    f"EMA200: {ema200}\n"
+                    f"СИГНАЛ: <b>{signal}</b>\n"
+                    f"Вход: {round(price,6)}\n"
+                    f"STOP: {round(stop,6)}\n"
+                    f"TP1: {round(tp1,6)}\n"
+                    f"TP2: {round(tp2,6)}\n"
+                    f"Размер позиции: {round(position_size,6)}\n"
+                    f"ИТОГО прибыль: ~{round(total_profit,2)}$\n"
+                    f"Ликвидность: {round(liq,2)}$\n"
+                    f"Объём 24ч: {round(vol,2)}$\n"
+                    f"DEX: {dex}\n\n"
+                )
+
+            if not signals_found:
+                report += "Нет новых сигналов (усиленный фильтр ликвидности/объёма).\n\n"
+
+            report += f"⏱ UTC: {now}"
+            send_telegram(report)
+
+        except Exception as e:
+            send_telegram(f"❌ BOT ERROR: {e}")
+
+        time.sleep(CHECK_INTERVAL)
+
+if __name__ == "__main__":
+    send_telegram("✅ ШАГ 8 активирован. Ликвидность ≥ 100k$, Объём ≥ 250k$.")
+    run_bot()
