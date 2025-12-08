@@ -1,4 +1,4 @@
-# === ШАГ 8 — УСИЛЕННЫЙ ФИЛЬТР ЛИКВИДНОСТИ И ОБЪЁМА ===
+# === ШАГ 9 — ТРЕЙЛИНГ-СТОП 1.5×ATR (ПОСЛЕ TP1) ===
 
 import os
 import time
@@ -8,7 +8,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 8 — LIQ/VOL FILTER) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 9 — TRAILING 1.5 ATR) ===", flush=True)
 
 load_dotenv()
 
@@ -16,42 +16,44 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 60 * 5
-STATE_FILE = "last_signals.json"
+STATE_FILE = "last_states.json"
+POSITIONS_FILE = "open_positions.json"
 
 # ===== РИСК =====
 DEPOSIT_USD = 100.0
 RISK_PERCENT = 1.0
 RISK_USD = DEPOSIT_USD * (RISK_PERCENT / 100.0)
 
-# ===== УСИЛЕННЫЕ ФИЛЬТРЫ (ПОДТВЕРЖДЁННЫЕ) =====
-ALT_MIN_LIQUIDITY = 100_000     # 100k $
-ALT_MIN_VOLUME = 250_000        # 250k $
+# ===== УСИЛЕННЫЕ ФИЛЬТРЫ (ШАГ 8) =====
+ALT_MIN_LIQUIDITY = 100_000
+ALT_MIN_VOLUME = 250_000
 
-# ===== ПАРАМЕТРЫ =====
+# ===== ПАРАМЕТРЫ ИНДИКАТОРОВ =====
 RSI_PERIOD = 14
 ATR_PERIOD = 14
-
 RSI_LONG_LEVEL = 35
 RSI_SHORT_LEVEL = 65
-
 EMA_FAST = 50
 EMA_SLOW = 200
 
+# ===== ТРЕЙЛИНГ =====
+TRAIL_MULT = 1.5  # выбран вариант 2
+
 ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync-era"]
 
-# ===== СОСТОЯНИЕ =====
-def load_last_states():
-    if not os.path.exists(STATE_FILE):
-        return {}
+# ===== УТИЛИТЫ СОСТОЯНИЯ =====
+def load_json_safe(path, default):
+    if not os.path.exists(path):
+        return default
     try:
-        with open(STATE_FILE, "r") as f:
+        with open(path, "r") as f:
             return json.load(f)
     except:
-        return {}
+        return default
 
-def save_last_states(states):
-    with open(STATE_FILE, "w") as f:
-        json.dump(states, f)
+def save_json_safe(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f)
 
 # ===== TELEGRAM =====
 def send_telegram(message):
@@ -62,7 +64,7 @@ def send_telegram(message):
     except:
         pass
 
-# ===== COINGECKO =====
+# ===== COINGECKO (ЦЕНЫ И ИСТОРИЯ) =====
 def get_ohlc_from_coingecko(coin_id):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
@@ -95,7 +97,7 @@ def calculate_ema(df, period):
         return None
     return round(float(df["close"].ewm(span=period).mean().iloc[-1]), 6)
 
-# ===== DEX (УСИЛЕННЫЙ ФИЛЬТР) =====
+# ===== DEX (ШАГ 8 — УСИЛЕННЫЙ ФИЛЬТР) =====
 def get_dex_data_alt(query):
     try:
         url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
@@ -114,7 +116,6 @@ def get_dex_data_alt(query):
         vol = pair.get("volume", {}).get("h24", 0)
         dex = pair.get("dexId")
 
-        # === УСИЛЕННЫЕ ПОРОГИ ===
         if liq < ALT_MIN_LIQUIDITY or vol < ALT_MIN_VOLUME:
             return None
 
@@ -122,18 +123,106 @@ def get_dex_data_alt(query):
     except:
         return None
 
+# ===== ОТКРЫТИЕ СДЕЛКИ =====
+def open_position(alt, signal, price, atr, dex):
+    stop = price - atr if signal == "LONG" else price + atr
+    tp1 = price + atr if signal == "LONG" else price - atr
+    tp2 = price + atr * 2 if signal == "LONG" else price - atr * 2
+    stop_dist = abs(price - stop)
+    size = round(RISK_USD / stop_dist, 6)
+
+    pos = {
+        "alt": alt,
+        "signal": signal,
+        "entry": round(price, 6),
+        "stop": round(stop, 6),
+        "tp1": round(tp1, 6),
+        "tp2": round(tp2, 6),
+        "atr": atr,
+        "size": size,
+        "dex": dex,
+        "tp1_done": False,
+        "active": True
+    }
+
+    send_telegram(
+        f"<b>ОТКРЫТИЕ СДЕЛКИ</b>\n"
+        f"{alt.upper()} | {signal}\n"
+        f"Вход: {round(price,6)}\n"
+        f"STOP: {round(stop,6)}\n"
+        f"TP1: {round(tp1,6)} | TP2: {round(tp2,6)}\n"
+        f"Размер: {size}\nDEX: {dex}"
+    )
+    return pos
+
+# ===== ОБНОВЛЕНИЕ ТРЕЙЛИНГА =====
+def update_trailing(pos, current_price):
+    atr = pos["atr"]
+    trail_dist = atr * TRAIL_MULT
+
+    if pos["signal"] == "LONG":
+        # фиксация TP1 → безубыток
+        if (not pos["tp1_done"]) and current_price >= pos["tp1"]:
+            pos["tp1_done"] = True
+            pos["stop"] = pos["entry"]
+            send_telegram(f"🔒 TP1 достигнут, STOP в безубытке: {pos['stop']}")
+        # трейлинг после TP1
+        if pos["tp1_done"]:
+            new_stop = max(pos["stop"], current_price - trail_dist)
+            pos["stop"] = round(new_stop, 6)
+        # выход по стопу
+        if current_price <= pos["stop"]:
+            pos["active"] = False
+            send_telegram(f"✅ ТРЕЙЛИНГ-ВЫХОД: {pos['alt'].upper()} | Цена: {current_price}")
+    else:
+        if (not pos["tp1_done"]) and current_price <= pos["tp1"]:
+            pos["tp1_done"] = True
+            pos["stop"] = pos["entry"]
+            send_telegram(f"🔒 TP1 достигнут, STOP в безубытке: {pos['stop']}")
+        if pos["tp1_done"]:
+            new_stop = min(pos["stop"], current_price + trail_dist)
+            pos["stop"] = round(new_stop, 6)
+        if current_price >= pos["stop"]:
+            pos["active"] = False
+            send_telegram(f"✅ ТРЕЙЛИНГ-ВЫХОД: {pos['alt'].upper()} | Цена: {current_price}")
+
+    return pos
+
 # ===== ОСНОВНОЙ ЦИКЛ =====
 def run_bot():
-    last_states = load_last_states()
+    last_states = load_json_safe(STATE_FILE, {})
+    positions = load_json_safe(POSITIONS_FILE, {})
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            report = "<b>📈 СИГНАЛЫ (ШАГ 8 — УСИЛЕННЫЙ ФИЛЬТР ЛИКВ/ОБЪЁМ)</b>\n\n"
 
+            # ---- 1) ОБНОВЛЯЕМ ТРЕЙЛИНГ ПО ОТКРЫТЫМ ПОЗИЦИЯМ
+            for alt, pos in list(positions.items()):
+                if not pos.get("active"):
+                    continue
+
+                df = get_ohlc_from_coingecko(alt)
+                if df is None:
+                    continue
+
+                price = float(df["close"].iloc[-1])
+                pos = update_trailing(pos, price)
+                positions[alt] = pos
+
+                if not pos["active"]:
+                    positions.pop(alt, None)
+
+            save_json_safe(POSITIONS_FILE, positions)
+
+            # ---- 2) ИЩЕМ НОВЫЕ СИГНАЛЫ (ЕСЛИ ПОЗИЦИЯ НЕ ОТКРЫТА)
+            report = "<b>📈 СИГНАЛЫ (ШАГ 9 — ТРЕЙЛИНГ 1.5×ATR)</b>\n\n"
             signals_found = False
 
             for alt in ALT_TOKENS:
+                if alt in positions:
+                    continue
+
                 dex_data = get_dex_data_alt(alt)
                 df = get_ohlc_from_coingecko(alt)
 
@@ -143,7 +232,6 @@ def run_bot():
                 rsi = calculate_rsi(df)
                 atr = calculate_atr(df)
                 price = float(df["close"].iloc[-1])
-
                 ema50 = calculate_ema(df, EMA_FAST)
                 ema200 = calculate_ema(df, EMA_SLOW)
 
@@ -161,49 +249,30 @@ def run_bot():
 
                 if last_states.get(alt) == signal:
                     continue
-
                 last_states[alt] = signal
-                save_last_states(last_states)
+                save_json_safe(STATE_FILE, last_states)
 
                 if signal == "NEUTRAL":
                     continue
 
                 liq, vol, dex = dex_data
-
-                stop = price - atr if signal == "LONG" else price + atr
-                tp1 = price + atr if signal == "LONG" else price - atr
-                tp2 = price + atr * 2 if signal == "LONG" else price - atr * 2
-
-                stop_dist = abs(price - stop)
-                position_size = RISK_USD / stop_dist
-                part = position_size / 2
-
-                profit_tp1 = abs(tp1 - price) * part
-                profit_tp2 = abs(tp2 - price) * part
-                total_profit = profit_tp1 + profit_tp2
+                pos = open_position(alt, signal, price, atr, dex)
+                positions[alt] = pos
+                save_json_safe(POSITIONS_FILE, positions)
 
                 signals_found = True
 
                 report += (
                     f"<b>{alt.upper()}</b>\n"
-                    f"ТРЕНД: {trend}\n"
-                    f"RSI: {rsi}\n"
-                    f"EMA50: {ema50}\n"
-                    f"EMA200: {ema200}\n"
                     f"СИГНАЛ: <b>{signal}</b>\n"
-                    f"Вход: {round(price,6)}\n"
-                    f"STOP: {round(stop,6)}\n"
-                    f"TP1: {round(tp1,6)}\n"
-                    f"TP2: {round(tp2,6)}\n"
-                    f"Размер позиции: {round(position_size,6)}\n"
-                    f"ИТОГО прибыль: ~{round(total_profit,2)}$\n"
-                    f"Ликвидность: {round(liq,2)}$\n"
-                    f"Объём 24ч: {round(vol,2)}$\n"
-                    f"DEX: {dex}\n\n"
+                    f"Цена: {round(price,6)}\n"
+                    f"RSI: {rsi}\n"
+                    f"EMA50: {ema50} | EMA200: {ema200}\n"
+                    f"Ликвидность: {round(liq,2)}$ | Объём: {round(vol,2)}$\n\n"
                 )
 
             if not signals_found:
-                report += "Нет новых сигналов (усиленный фильтр ликвидности/объёма).\n\n"
+                report += "Нет новых сигналов.\n\n"
 
             report += f"⏱ UTC: {now}"
             send_telegram(report)
@@ -214,5 +283,5 @@ def run_bot():
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    send_telegram("✅ ШАГ 8 активирован. Ликвидность ≥ 100k$, Объём ≥ 250k$.")
+    send_telegram("✅ ШАГ 9 активирован. Трейлинг-стоп 1.5×ATR после TP1.")
     run_bot()
