@@ -6,7 +6,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 4.2 — ANTI DUPLICATES) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 4.3 — RSI 35/65) ===", flush=True)
 
 # =========================
 # ПЕРЕМЕННЫЕ
@@ -17,7 +17,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 60 * 5  # 5 минут
-
 STATE_FILE = "last_signals.json"
 
 # ФИЛЬТРЫ ДЛЯ АЛЬТОВ (DEX)
@@ -28,6 +27,10 @@ ALT_MIN_VOLUME = 10_000
 RSI_PERIOD = 14
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 1.5
+
+# ✅ НОВЫЕ ПОРОГИ (35 / 65)
+RSI_LONG_LEVEL = 35
+RSI_SHORT_LEVEL = 65
 
 # =========================
 # СПИСОК ТОКЕНОВ
@@ -161,7 +164,7 @@ def get_dex_data_alt(query: str):
         return None
 
 # =========================
-# ЛОГИКА СИГНАЛА
+# ЛОГИКА СИГНАЛА (35 / 65)
 # =========================
 def make_signal(token: str):
     df = get_ohlc_from_coingecko(COINGECKO_IDS[token])
@@ -173,9 +176,9 @@ def make_signal(token: str):
     price = float(df["close"].iloc[-1])
 
     signal = "NEUTRAL"
-    if rsi < 30:
+    if rsi < RSI_LONG_LEVEL:
         signal = "LONG"
-    elif rsi > 70:
+    elif rsi > RSI_SHORT_LEVEL:
         signal = "SHORT"
 
     if signal == "NEUTRAL":
@@ -201,15 +204,14 @@ def make_signal(token: str):
 # ОСНОВНОЙ ЦИКЛ
 # =========================
 def run_bot():
-    print("=== BOT LOOP STARTED (STEP 4.2 — ANTI DUPLICATES) ===", flush=True)
+    print("=== BOT LOOP STARTED (STEP 4.3 — RSI 35/65) ===", flush=True)
 
     last_states = load_last_states()
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-            report = "<b>📈 СИГНАЛЫ (ШАГ 4.2 — АНТИ-ДУБЛИКАТЫ)</b>\n\n"
+            report = "<b>📈 СИГНАЛЫ (ШАГ 4.3 — RSI 35/65)</b>\n\n"
 
             # ФОН РЫНКА
             for big in BIG_TOKENS:
@@ -259,7 +261,7 @@ def run_bot():
                 )
 
             if not signals_found:
-                report += "Нет новых сигналов (защита от дубликатов активна).\n\n"
+                report += "Нет новых сигналов (анти-дубликаты + 35/65).\n\n"
 
             report += f"⏱ UTC: {now}"
             send_telegram(report)
@@ -274,10 +276,11 @@ def run_bot():
 # =========================
 if __name__ == "__main__":
     try:
-        print("=== MAIN ENTERED (STEP 4.2) ===", flush=True)
-        send_telegram("✅ ШАГ 4.2 активирован. Включена защита от дубликатов сигналов.")
+        print("=== MAIN ENTERED (STEP 4.3) ===", flush=True)
+        send_telegram("✅ ШАГ 4.3 активирован. RSI установлен на 35 / 65.")
         run_bot()
     except Exception as e:
         print("🔥 FATAL START ERROR:", e, flush=True)
         while True:
             time.sleep(30)
+
