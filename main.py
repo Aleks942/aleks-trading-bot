@@ -1,3 +1,4 @@
+print("=== BOOT OK: main.py started ===", flush=True)
 import os
 import time
 import json
