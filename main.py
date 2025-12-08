@@ -204,4 +204,4 @@ def run_bot():
 
 if __name__ == "__main__":
     send_telegram("✅ ШАГ 7 активирован. EMA-фильтр (исправлено).")
-    run_bot()  п
+    run_bot()  
