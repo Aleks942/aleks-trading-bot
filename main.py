@@ -1,13 +1,11 @@
 import os
 import time
-import math
 import requests
 import ccxt
 import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-# === ДИАГНОСТИКА СТАРТА ===
 print("=== BOT BOOT STARTED ===", flush=True)
 
 # =========================
@@ -29,11 +27,9 @@ ATR_MULTIPLIER = 1.5
 TP1_MULTIPLIER = 1.0
 TP2_MULTIPLIER = 2.0
 
-CHECK_INTERVAL = 60 * 5  # каждые 5 минут
-
+CHECK_INTERVAL = 60 * 5
 LAST_SIGNAL_FILE = "last_signal.txt"
 
-# === ДИАГНОСТИКА ПЕРЕД СОЗДАНИЕМ EXCHANGE ===
 print("=== LOADING EXCHANGE ===", flush=True)
 
 try:
@@ -43,13 +39,11 @@ except Exception as e:
     while True:
         time.sleep(30)
 
-
 # =========================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =========================
 
 def send_telegram(message):
-    print("=== SENDING TELEGRAM ===", flush=True)
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
@@ -62,14 +56,12 @@ def send_telegram(message):
     except Exception as e:
         print("TELEGRAM ERROR:", e, flush=True)
 
-
 def get_klines(tf, limit=200):
-    print(f"=== FETCHING KLINES {tf} ===", flush=True)
+    ohlcv = exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=limit)
     return pd.DataFrame(
-        exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=limit),
-        columns=["time","open","high","low","close","volume"]
+        ohlcv,
+        columns=["time", "open", "high", "low", "close", "volume"]
     )
-
 
 def calculate_rsi(df, period=14):
     delta = df["close"].diff()
@@ -80,7 +72,6 @@ def calculate_rsi(df, period=14):
     rs = avg_gain / avg_loss
     return (100 - (100 / (1 + rs))).iloc[-1]
 
-
 def calculate_atr(df, period=14):
     high_low = df["high"] - df["low"]
     high_close = abs(df["high"] - df["close"].shift())
@@ -88,7 +79,6 @@ def calculate_atr(df, period=14):
     ranges = pd.concat([high_low, high_close, low_close], axis=1)
     true_range = ranges.max(axis=1)
     return true_range.rolling(period).mean().iloc[-1]
-
 
 def get_trend(df):
     ema_fast = df["close"].ewm(span=20).mean().iloc[-1]
@@ -99,35 +89,28 @@ def get_trend(df):
         return "DOWN"
     return "FLAT"
 
-
 def load_last_signal():
     if not os.path.exists(LAST_SIGNAL_FILE):
         return None
     return open(LAST_SIGNAL_FILE).read().strip()
 
-
 def save_last_signal(sig):
     with open(LAST_SIGNAL_FILE, "w") as f:
         f.write(sig)
 
-
 def get_balance():
-    print("=== FETCH BALANCE ===", flush=True)
     try:
         b = exchange.fetch_balance()
         return float(b["USDT"]["free"])
     except Exception as e:
         print("BALANCE ERROR:", e, flush=True)
-        return 100  # fallback, чтобы не упасть
-
+        return 100
 
 # =========================
 # ОСНОВНАЯ ЛОГИКА
 # =========================
 
 def analyze_market():
-    print("=== ANALYZING MARKET ===", flush=True)
-
     df15 = get_klines(TIMEFRAME)
     df1h = get_klines(TREND_TIMEFRAME)
 
@@ -136,12 +119,10 @@ def analyze_market():
     atr = calculate_atr(df15)
     trend = get_trend(df1h)
 
-    # объём
     volume = df15["volume"].iloc[-1]
     avg = df15["volume"].rolling(20).mean().iloc[-1]
     volume_ratio = volume / avg if avg > 0 else 1
 
-    # базовый сигнал
     signal = "NEUTRAL"
 
     if trend == "UP" and 50 < rsi < 70:
@@ -149,16 +130,12 @@ def analyze_market():
     elif trend == "DOWN" and 30 < rsi < 50:
         signal = "SHORT"
 
-    # фильтр RSI
     if rsi > 70 and signal == "LONG":
         signal = "NEUTRAL"
     if rsi < 30 and signal == "SHORT":
         signal = "NEUTRAL"
 
-    print(f"=== SIGNAL: {signal}, PRICE: {price}, RSI: {rsi}, TREND: {trend} ===", flush=True)
-
     return signal, price, rsi, atr, volume_ratio, trend
-
 
 def calc_levels(signal, price, atr):
     sl_dist = atr * ATR_MULTIPLIER
@@ -176,13 +153,11 @@ def calc_levels(signal, price, atr):
 
     return entry, stop, tp1, tp2, sl_dist
 
-
 def calc_size(sl_dist):
     bal = get_balance()
     risk = bal * (RISK_PERCENT / 100)
     size = risk / sl_dist
     return round(size, 4), round(risk, 2)
-
 
 def run_bot():
     print("=== BOT LOOP STARTED ===", flush=True)
@@ -192,4 +167,47 @@ def run_bot():
             last = load_last_signal()
 
             if signal != "NEUTRAL" and signal != last:
-                entry, stop, tp1, tp2, sl = calc_le_
+                entry, stop, tp1, tp2, sl = calc_levels(signal, price, atr)
+                size, risk = calc_size(sl)
+
+                msg = f"""
+<b>СИГНАЛ: {signal}</b>
+
+BTC / 15m
+Trend 1h: {trend}
+
+Цена: {price}
+RSI: {round(rsi,2)}
+ATR: {round(atr,2)}
+
+ENTRY: {round(entry,2)}
+STOP: {round(stop,2)}
+TP1: {round(tp1,2)}
+TP2: {round(tp2,2)}
+
+Объём: {round(volume,2)}x
+Риск: {risk} USDT
+Размер: {size} BTC
+                """
+
+                send_telegram(msg)
+                save_last_signal(signal)
+
+        except Exception as e:
+            print("BOT LOOP ERROR:", e, flush=True)
+
+        time.sleep(CHECK_INTERVAL)
+
+# =========================
+# ЗАПУСК
+# =========================
+
+if __name__ == "__main__":
+    print("=== MAIN ENTERED ===", flush=True)
+    try:
+        send_telegram("✅ Бот запущен. Инициализация…")
+        run_bot()
+    except Exception as e:
+        print("FATAL START ERROR:", e, flush=True)
+        while True:
+            time.sleep(30)
