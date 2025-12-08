@@ -6,11 +6,8 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 4.4 — BTC FILTER) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 4.4 — BTC FILTER FIXED) ===", flush=True)
 
-# =========================
-# ПЕРЕМЕННЫЕ
-# =========================
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -19,23 +16,16 @@ CHAT_ID = os.getenv("CHAT_ID")
 CHECK_INTERVAL = 60 * 5
 STATE_FILE = "last_signals.json"
 
-# ФИЛЬТРЫ ДЛЯ АЛЬТОВ (DEX)
 ALT_MIN_LIQUIDITY = 10_000
 ALT_MIN_VOLUME = 10_000
 
-# ПАРАМЕТРЫ СТРАТЕГИИ
 RSI_PERIOD = 14
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 1.5
 
-# RSI ПОРОГИ
 RSI_LONG_LEVEL = 35
 RSI_SHORT_LEVEL = 65
 
-# =========================
-# СПИСОК ТОКЕНОВ
-# =========================
-BIG_TOKENS = ["bitcoin"]
 ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync-era"]
 
 COINGECKO_IDS = {
@@ -48,9 +38,6 @@ COINGECKO_IDS = {
     "zksync-era": "zksync-era"
 }
 
-# =========================
-# СОСТОЯНИЕ (АНТИ-ДУБЛИКАТ)
-# =========================
 def load_last_states():
     if not os.path.exists(STATE_FILE):
         return {}
@@ -64,9 +51,6 @@ def save_last_states(states):
     with open(STATE_FILE, "w") as f:
         json.dump(states, f)
 
-# =========================
-# TELEGRAM
-# =========================
 def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -75,9 +59,6 @@ def send_telegram(message):
     except Exception as e:
         print("TELEGRAM ERROR:", e, flush=True)
 
-# =========================
-# COINGECKO — СВЕЧИ
-# =========================
 def get_ohlc_from_coingecko(coin_id):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
@@ -91,9 +72,6 @@ def get_ohlc_from_coingecko(coin_id):
     except:
         return None
 
-# =========================
-# RSI И ATR
-# =========================
 def calculate_rsi(df):
     delta = df["close"].diff()
     gain = delta.where(delta > 0, 0)
@@ -101,15 +79,13 @@ def calculate_rsi(df):
     avg_gain = gain.rolling(RSI_PERIOD).mean()
     avg_loss = loss.rolling(RSI_PERIOD).mean()
     rs = avg_gain / avg_loss
-    return round(float(100 - (100 / (1 + rs))).dropna().iloc[-1], 2)
+    rsi = 100 - (100 / (1 + rs))
+    return round(float(rsi.dropna().iloc[-1]), 2)
 
 def calculate_atr(df):
     tr = df["close"].diff().abs()
     return round(float(tr.rolling(ATR_PERIOD).mean().dropna().iloc[-1]), 6)
 
-# =========================
-# DEX — ДАННЫЕ
-# =========================
 def get_dex_data_alt(query):
     try:
         url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
@@ -130,21 +106,21 @@ def get_dex_data_alt(query):
     except:
         return None
 
-# =========================
-# ОСНОВНОЙ ЦИКЛ
-# =========================
 def run_bot():
     last_states = load_last_states()
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            report = "<b>📈 СИГНАЛЫ (ШАГ 4.4 — ФИЛЬТР BTC)</b>\n\n"
+            report = "<b>📈 СИГНАЛЫ (ШАГ 4.4 — BTC ФИЛЬТР)</b>\n\n"
 
-            # ✅ BTC RSI — РЫНОЧНЫЙ ФИЛЬТР
             btc_df = get_ohlc_from_coingecko("bitcoin")
-            btc_rsi = calculate_rsi(btc_df)
+            if btc_df is None:
+                time.sleep(CHECK_INTERVAL)
+                continue
+
             btc_price = round(float(btc_df["close"].iloc[-1]), 2)
+            btc_rsi = calculate_rsi(btc_df)
 
             report += f"<b>BITCOIN</b> | Цена: {btc_price}$ | RSI: {btc_rsi}\n\n"
 
@@ -177,8 +153,6 @@ def run_bot():
                     signal = "LONG"
                 elif rsi > RSI_SHORT_LEVEL and allow_short:
                     signal = "SHORT"
-                else:
-                    signal = "NEUTRAL"
 
                 if last_states.get(alt) == signal:
                     continue
@@ -219,9 +193,7 @@ def run_bot():
 
         time.sleep(CHECK_INTERVAL)
 
-# =========================
-# ЗАПУСК
-# =========================
 if __name__ == "__main__":
-    send_telegram("✅ ШАГ 4.4 активирован. Включён фильтр по BTC.")
+    send_telegram("✅ ШАГ 4.4 активирован. Включён фильтр по BTC (исправлено).")
     run_bot()
+
