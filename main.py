@@ -4,36 +4,20 @@ import requests
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 1 — NO EXCHANGES) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 1 SIMPLE) ===", flush=True)
 
 # =========================
-# ЗАГРУЗКА НАСТРОЕК
+# ЗАГРУЗКА ПЕРЕМЕННЫХ
 # =========================
 load_dotenv()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-    print("❌ TELEGRAM_TOKEN или TELEGRAM_CHAT_ID не заданы", flush=True)
+if not BOT_TOKEN or not CHAT_ID:
+    print("❌ BOT_TOKEN или CHAT_ID не заданы в Railway", flush=True)
 
 HEARTBEAT_INTERVAL = 60 * 5  # 5 минут
-
-SYMBOLS = [
-    "BTC/USDT",
-    "ETH/USDT",
-    "SOL/USDT",
-    "XRP/USDT",
-    "DOGE/USDT",
-    "NEAR/USDT",
-    "ARB/USDT",
-    "MINA/USDT",
-    "STRK/USDT",
-    "ZK/USDT",
-    "NOT/USDT",
-    "1INCH/USDT",
-    "LDO/USDT"
-]
 
 # =========================
 # TELEGRAM
@@ -41,15 +25,14 @@ SYMBOLS = [
 
 def send_telegram(message: str):
     try:
-        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-            print("❌ Telegram не настроен", flush=True)
+        if not BOT_TOKEN or not CHAT_ID:
+            print("❌ Telegram не настроен (нет токена или chat_id)", flush=True)
             return
 
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
+            "chat_id": CHAT_ID,
+            "text": message
         }
 
         r = requests.post(url, data=payload, timeout=10)
@@ -57,36 +40,33 @@ def send_telegram(message: str):
         if r.status_code == 200:
             print("=== TELEGRAM SENT OK ===", flush=True)
         else:
-            print(f"❌ TELEGRAM STATUS {r.status_code}: {r.text}", flush=True)
+            print(f"❌ TELEGRAM ERROR {r.status_code}: {r.text}", flush=True)
 
     except Exception as e:
-        print("❌ TELEGRAM ERROR:", e, flush=True)
+        print("❌ TELEGRAM EXCEPTION:", e, flush=True)
 
 # =========================
-# ОСНОВНОЙ ЦИКЛ (ШАГ 1)
+# ОСНОВНОЙ ЦИКЛ
 # =========================
 
-def run_bot_step1():
-    print("=== BOT LOOP STARTED (STEP 1) ===", flush=True)
+def run_bot():
+    print("=== BOT LOOP STARTED (STEP 1 SIMPLE) ===", flush=True)
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
             msg = (
-                "🟢 Бот жив (ШАГ 1)\n\n"
-                "Источник рынков: ОТКЛЮЧЕН\n"
-                "Биржи: НЕ используются\n"
-                "DEX: НЕ подключены\n\n"
-                f"UTC Время: {now}\n"
-                f"Монет в списке: {len(SYMBOLS)}\n\n"
-                "Статус: проверка стабильности Railway"
+                "🟢 Бот жив\n\n"
+                "Режим: тестовый (ШАГ 1)\n"
+                "Источники рынка: отключены\n\n"
+                f"UTC время: {now}"
             )
 
             send_telegram(msg)
 
         except Exception as e:
-            print("❌ LOOP ERROR (STEP 1):", e, flush=True)
+            print("❌ LOOP ERROR:", e, flush=True)
 
         time.sleep(HEARTBEAT_INTERVAL)
 
@@ -96,11 +76,11 @@ def run_bot_step1():
 
 if __name__ == "__main__":
     try:
-        print("=== MAIN ENTERED (STEP 1) ===", flush=True)
-        send_telegram("✅ Бот запущен (ШАГ 1). Проверка стабильной работы без источников данных.")
-        run_bot_step1()
+        print("=== MAIN ENTERED (STEP 1 SIMPLE) ===", flush=True)
+        send_telegram("✅ Бот запущен (ШАГ 1). Проверка связи с Telegram.")
+        run_bot()
 
     except Exception as e:
-        print("🔥 FATAL START ERROR (STEP 1):", e, flush=True)
+        print("🔥 FATAL START ERROR:", e, flush=True)
         while True:
             time.sleep(30)
