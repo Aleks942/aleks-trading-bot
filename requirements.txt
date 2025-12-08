@@ -6,4 +6,4 @@ aiohttp
 python-dotenv
 fastapi
 uvicorn
-ccxt
+
