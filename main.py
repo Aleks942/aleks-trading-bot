@@ -1,4 +1,4 @@
-# === ШАГ 9 — ТРЕЙЛИНГ-СТОП 1.5×ATR (ПОСЛЕ TP1) ===
+# === ШАГ 10 — ЖУРНАЛ СДЕЛОК + PnL ===
 
 import os
 import time
@@ -8,7 +8,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 9 — TRAILING 1.5 ATR) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 10 — JOURNAL + PNL) ===", flush=True)
 
 load_dotenv()
 
@@ -18,13 +18,14 @@ CHAT_ID = os.getenv("CHAT_ID")
 CHECK_INTERVAL = 60 * 5
 STATE_FILE = "last_states.json"
 POSITIONS_FILE = "open_positions.json"
+TRADES_LOG_FILE = "trades_log.json"
 
 # ===== РИСК =====
 DEPOSIT_USD = 100.0
 RISK_PERCENT = 1.0
 RISK_USD = DEPOSIT_USD * (RISK_PERCENT / 100.0)
 
-# ===== УСИЛЕННЫЕ ФИЛЬТРЫ (ШАГ 8) =====
+# ===== УСИЛЕННЫЕ ФИЛЬТРЫ =====
 ALT_MIN_LIQUIDITY = 100_000
 ALT_MIN_VOLUME = 250_000
 
@@ -37,12 +38,12 @@ EMA_FAST = 50
 EMA_SLOW = 200
 
 # ===== ТРЕЙЛИНГ =====
-TRAIL_MULT = 1.5  # выбран вариант 2
+TRAIL_MULT = 1.5
 
 ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync-era"]
 
-# ===== УТИЛИТЫ СОСТОЯНИЯ =====
-def load_json_safe(path, default):
+# ===== УТИЛИТЫ =====
+def load_json(path, default):
     if not os.path.exists(path):
         return default
     try:
@@ -51,9 +52,9 @@ def load_json_safe(path, default):
     except:
         return default
 
-def save_json_safe(path, data):
+def save_json(path, data):
     with open(path, "w") as f:
-        json.dump(data, f)
+        json.dump(data, f, indent=2)
 
 # ===== TELEGRAM =====
 def send_telegram(message):
@@ -64,8 +65,8 @@ def send_telegram(message):
     except:
         pass
 
-# ===== COINGECKO (ЦЕНЫ И ИСТОРИЯ) =====
-def get_ohlc_from_coingecko(coin_id):
+# ===== COINGECKO =====
+def get_ohlc(coin_id):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
         params = {"vs_currency": "usd", "days": 3}
@@ -73,208 +74,196 @@ def get_ohlc_from_coingecko(coin_id):
         prices = data.get("prices", [])
         if len(prices) < 60:
             return None
-        closes = [x[1] for x in prices]
-        return pd.DataFrame({"close": closes})
+        df = pd.DataFrame({"close": [x[1] for x in prices]})
+        return df
     except:
         return None
 
-def calculate_rsi(df):
-    delta = df["close"].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(RSI_PERIOD).mean()
-    avg_loss = loss.rolling(RSI_PERIOD).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return round(float(rsi.dropna().iloc[-1]), 2)
+def rsi(df):
+    d = df["close"].diff()
+    g = d.where(d > 0, 0)
+    l = -d.where(d < 0, 0)
+    ag = g.rolling(RSI_PERIOD).mean()
+    al = l.rolling(RSI_PERIOD).mean()
+    rs = ag / al
+    r = 100 - (100 / (1 + rs))
+    return round(float(r.dropna().iloc[-1]), 2)
 
-def calculate_atr(df):
+def atr(df):
     tr = df["close"].diff().abs()
     return round(float(tr.rolling(ATR_PERIOD).mean().dropna().iloc[-1]), 6)
 
-def calculate_ema(df, period):
-    if len(df) < period:
+def ema(df, p):
+    if len(df) < p:
         return None
-    return round(float(df["close"].ewm(span=period).mean().iloc[-1]), 6)
+    return round(float(df["close"].ewm(span=p).mean().iloc[-1]), 6)
 
-# ===== DEX (ШАГ 8 — УСИЛЕННЫЙ ФИЛЬТР) =====
-def get_dex_data_alt(query):
+# ===== DEX =====
+def dex_data(query):
     try:
         url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
         data = requests.get(url, timeout=15).json()
-        pairs = data.get("pairs", [])
-        if not pairs:
+        p = data.get("pairs", [])
+        if not p:
             return None
-
-        pair = sorted(
-            pairs,
-            key=lambda x: x.get("liquidity", {}).get("usd", 0),
-            reverse=True
-        )[0]
-
-        liq = pair.get("liquidity", {}).get("usd", 0)
-        vol = pair.get("volume", {}).get("h24", 0)
-        dex = pair.get("dexId")
-
+        p = sorted(p, key=lambda x: x.get("liquidity", {}).get("usd", 0), reverse=True)[0]
+        liq = p.get("liquidity", {}).get("usd", 0)
+        vol = p.get("volume", {}).get("h24", 0)
+        dex = p.get("dexId")
         if liq < ALT_MIN_LIQUIDITY or vol < ALT_MIN_VOLUME:
             return None
-
         return liq, vol, dex
     except:
         return None
 
-# ===== ОТКРЫТИЕ СДЕЛКИ =====
-def open_position(alt, signal, price, atr, dex):
-    stop = price - atr if signal == "LONG" else price + atr
-    tp1 = price + atr if signal == "LONG" else price - atr
-    tp2 = price + atr * 2 if signal == "LONG" else price - atr * 2
-    stop_dist = abs(price - stop)
-    size = round(RISK_USD / stop_dist, 6)
+# ===== ЖУРНАЛ =====
+def log_trade(trade):
+    log = load_json(TRADES_LOG_FILE, [])
+    log.append(trade)
+    save_json(TRADES_LOG_FILE, log)
+
+def trades_stats():
+    log = load_json(TRADES_LOG_FILE, [])
+    if not log:
+        return "Пока нет закрытых сделок."
+    total = sum(t["pnl"] for t in log)
+    wins = len([t for t in log if t["pnl"] > 0])
+    return f"Сделок: {len(log)} | Профитных: {wins} | Общий PnL: {round(total,2)}$"
+
+# ===== СДЕЛКИ =====
+def open_position(alt, side, price, atr_v, dex):
+    st = price - atr_v if side == "LONG" else price + atr_v
+    tp1 = price + atr_v if side == "LONG" else price - atr_v
+    tp2 = price + atr_v * 2 if side == "LONG" else price - atr_v * 2
+    size = round(RISK_USD / abs(price - st), 6)
 
     pos = {
-        "alt": alt,
-        "signal": signal,
+        "alt": alt, "side": side,
         "entry": round(price, 6),
-        "stop": round(stop, 6),
+        "stop": round(st, 6),
         "tp1": round(tp1, 6),
         "tp2": round(tp2, 6),
-        "atr": atr,
+        "atr": atr_v,
         "size": size,
-        "dex": dex,
         "tp1_done": False,
-        "active": True
+        "active": True,
+        "dex": dex,
+        "time": datetime.utcnow().isoformat()
     }
 
     send_telegram(
-        f"<b>ОТКРЫТИЕ СДЕЛКИ</b>\n"
-        f"{alt.upper()} | {signal}\n"
-        f"Вход: {round(price,6)}\n"
-        f"STOP: {round(stop,6)}\n"
-        f"TP1: {round(tp1,6)} | TP2: {round(tp2,6)}\n"
-        f"Размер: {size}\nDEX: {dex}"
+        f"<b>ОТКРЫТА СДЕЛКА</b>\n{alt.upper()} {side}\n"
+        f"Вход: {price}\nSTOP: {st}\nTP1: {tp1} | TP2: {tp2}\nРазмер: {size}"
     )
     return pos
 
-# ===== ОБНОВЛЕНИЕ ТРЕЙЛИНГА =====
-def update_trailing(pos, current_price):
-    atr = pos["atr"]
-    trail_dist = atr * TRAIL_MULT
+def update_trailing(pos, price):
+    trail = pos["atr"] * TRAIL_MULT
 
-    if pos["signal"] == "LONG":
-        # фиксация TP1 → безубыток
-        if (not pos["tp1_done"]) and current_price >= pos["tp1"]:
+    if pos["side"] == "LONG":
+        if not pos["tp1_done"] and price >= pos["tp1"]:
             pos["tp1_done"] = True
             pos["stop"] = pos["entry"]
-            send_telegram(f"🔒 TP1 достигнут, STOP в безубытке: {pos['stop']}")
-        # трейлинг после TP1
         if pos["tp1_done"]:
-            new_stop = max(pos["stop"], current_price - trail_dist)
-            pos["stop"] = round(new_stop, 6)
-        # выход по стопу
-        if current_price <= pos["stop"]:
+            pos["stop"] = max(pos["stop"], price - trail)
+        if price <= pos["stop"]:
             pos["active"] = False
-            send_telegram(f"✅ ТРЕЙЛИНГ-ВЫХОД: {pos['alt'].upper()} | Цена: {current_price}")
+            close_trade(pos, price)
+
     else:
-        if (not pos["tp1_done"]) and current_price <= pos["tp1"]:
+        if not pos["tp1_done"] and price <= pos["tp1"]:
             pos["tp1_done"] = True
             pos["stop"] = pos["entry"]
-            send_telegram(f"🔒 TP1 достигнут, STOP в безубытке: {pos['stop']}")
         if pos["tp1_done"]:
-            new_stop = min(pos["stop"], current_price + trail_dist)
-            pos["stop"] = round(new_stop, 6)
-        if current_price >= pos["stop"]:
+            pos["stop"] = min(pos["stop"], price + trail)
+        if price >= pos["stop"]:
             pos["active"] = False
-            send_telegram(f"✅ ТРЕЙЛИНГ-ВЫХОД: {pos['alt'].upper()} | Цена: {current_price}")
+            close_trade(pos, price)
 
     return pos
 
+def close_trade(pos, price):
+    pnl = (price - pos["entry"]) * pos["size"] if pos["side"] == "LONG" else (pos["entry"] - price) * pos["size"]
+
+    trade = {
+        "time": datetime.utcnow().isoformat(),
+        "alt": pos["alt"],
+        "side": pos["side"],
+        "entry": pos["entry"],
+        "exit": round(price, 6),
+        "size": pos["size"],
+        "pnl": round(pnl, 2)
+    }
+    log_trade(trade)
+
+    send_telegram(
+        f"✅ <b>СДЕЛКА ЗАКРЫТА</b>\n{pos['alt'].upper()} {pos['side']}\n"
+        f"Вход: {pos['entry']}\nВыход: {price}\n"
+        f"PnL: {round(pnl,2)}$\n\n{trades_stats()}"
+    )
+
 # ===== ОСНОВНОЙ ЦИКЛ =====
 def run_bot():
-    last_states = load_json_safe(STATE_FILE, {})
-    positions = load_json_safe(POSITIONS_FILE, {})
+    states = load_json(STATE_FILE, {})
+    positions = load_json(POSITIONS_FILE, {})
 
     while True:
         try:
-            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-            # ---- 1) ОБНОВЛЯЕМ ТРЕЙЛИНГ ПО ОТКРЫТЫМ ПОЗИЦИЯМ
+            # --- ТРЕЙЛИНГ
             for alt, pos in list(positions.items()):
-                if not pos.get("active"):
+                if not pos["active"]:
                     continue
-
-                df = get_ohlc_from_coingecko(alt)
+                df = get_ohlc(alt)
                 if df is None:
                     continue
-
                 price = float(df["close"].iloc[-1])
                 pos = update_trailing(pos, price)
-                positions[alt] = pos
-
                 if not pos["active"]:
-                    positions.pop(alt, None)
+                    positions.pop(alt)
+                else:
+                    positions[alt] = pos
+            save_json(POSITIONS_FILE, positions)
 
-            save_json_safe(POSITIONS_FILE, positions)
-
-            # ---- 2) ИЩЕМ НОВЫЕ СИГНАЛЫ (ЕСЛИ ПОЗИЦИЯ НЕ ОТКРЫТА)
-            report = "<b>📈 СИГНАЛЫ (ШАГ 9 — ТРЕЙЛИНГ 1.5×ATR)</b>\n\n"
-            signals_found = False
+            # --- ПОИСК СИГНАЛОВ
+            report = "<b>📈 СИГНАЛЫ (ШАГ 10 — ЖУРНАЛ + PnL)</b>\n\n"
+            has = False
 
             for alt in ALT_TOKENS:
                 if alt in positions:
                     continue
-
-                dex_data = get_dex_data_alt(alt)
-                df = get_ohlc_from_coingecko(alt)
-
-                if not dex_data or df is None:
+                dd = dex_data(alt)
+                df = get_ohlc(alt)
+                if not dd or df is None:
                     continue
 
-                rsi = calculate_rsi(df)
-                atr = calculate_atr(df)
-                price = float(df["close"].iloc[-1])
-                ema50 = calculate_ema(df, EMA_FAST)
-                ema200 = calculate_ema(df, EMA_SLOW)
+                r = rsi(df)
+                a = atr(df)
+                p = float(df["close"].iloc[-1])
+                e50 = ema(df, EMA_FAST)
+                e200 = ema(df, EMA_SLOW)
 
-                trend = "FLAT"
-                if ema50 and ema200:
-                    trend = "UP" if ema50 > ema200 else "DOWN"
-                elif ema50:
-                    trend = "UP" if price > ema50 else "DOWN"
+                trend = "UP" if (e50 and e200 and e50 > e200) else "DOWN"
+                sig = "LONG" if r < RSI_LONG_LEVEL and trend == "UP" else "SHORT" if r > RSI_SHORT_LEVEL and trend == "DOWN" else "NEUTRAL"
 
-                signal = "NEUTRAL"
-                if rsi < RSI_LONG_LEVEL and trend == "UP":
-                    signal = "LONG"
-                elif rsi > RSI_SHORT_LEVEL and trend == "DOWN":
-                    signal = "SHORT"
-
-                if last_states.get(alt) == signal:
+                if states.get(alt) == sig:
                     continue
-                last_states[alt] = signal
-                save_json_safe(STATE_FILE, last_states)
+                states[alt] = sig
+                save_json(STATE_FILE, states)
 
-                if signal == "NEUTRAL":
+                if sig == "NEUTRAL":
                     continue
 
-                liq, vol, dex = dex_data
-                pos = open_position(alt, signal, price, atr, dex)
+                liq, vol, dex = dd
+                pos = open_position(alt, sig, p, a, dex)
                 positions[alt] = pos
-                save_json_safe(POSITIONS_FILE, positions)
+                save_json(POSITIONS_FILE, positions)
 
-                signals_found = True
+                has = True
+                report += f"{alt.upper()} {sig} | Цена {p} | RSI {r}\n"
 
-                report += (
-                    f"<b>{alt.upper()}</b>\n"
-                    f"СИГНАЛ: <b>{signal}</b>\n"
-                    f"Цена: {round(price,6)}\n"
-                    f"RSI: {rsi}\n"
-                    f"EMA50: {ema50} | EMA200: {ema200}\n"
-                    f"Ликвидность: {round(liq,2)}$ | Объём: {round(vol,2)}$\n\n"
-                )
+            if not has:
+                report += "Нет новых сигналов.\n"
 
-            if not signals_found:
-                report += "Нет новых сигналов.\n\n"
-
-            report += f"⏱ UTC: {now}"
             send_telegram(report)
 
         except Exception as e:
@@ -283,5 +272,5 @@ def run_bot():
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    send_telegram("✅ ШАГ 9 активирован. Трейлинг-стоп 1.5×ATR после TP1.")
+    send_telegram("✅ ШАГ 10 активирован. Журнал сделок и PnL включены.")
     run_bot()
