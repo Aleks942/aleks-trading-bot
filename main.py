@@ -3,36 +3,27 @@ import time
 import json
 import sys
 import requests
-from datetime import datetime
-from dotenv import load_dotenv
 import atexit
 import math
+from datetime import datetime
+from dotenv import load_dotenv
 
 # =========================
-# ПЕРЕМЕННЫЕ
+# ENV
 # =========================
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-ALT = "solana"
-COIN_ID = "solana"
-
-DEPOSIT = 100.0
-RISK_PERCENT = 1.0  # 1%
-
-CHECK_INTERVAL = 300  # 5 минут
-INFO_STATE_FILE = "info_state.json"
-
 # =========================
-# ЖЁСТКАЯ ЗАЩИТА ОТ 2 ЗАПУСКОВ
+# ЖЁСТКАЯ ЗАЩИТА ОТ ДВУХ ЗАПУСКОВ
 # =========================
 
 LOCK_FILE = "bot.lock"
 
 if os.path.exists(LOCK_FILE):
-    print("⛔ Второй экземпляр бота остановлен", flush=True)
+    print("⛔ Второй процесс остановлен", flush=True)
     sys.exit()
 
 with open(LOCK_FILE, "w") as f:
@@ -43,6 +34,22 @@ def cleanup_lock():
         os.remove(LOCK_FILE)
 
 atexit.register(cleanup_lock)
+
+# =========================
+# НАСТРОЙКИ
+# =========================
+
+ALT = "SOLANA"
+COIN_ID = "solana"
+
+DEPOSIT = 100.0
+RISK_PERCENT = 1.0
+
+CHECK_INTERVAL = 300  # 5 минут
+
+STATE_FILE = "state.json"
+MSG_HASH_FILE = "last_msg.hash"
+START_FILE = "last_start.txt"
 
 # =========================
 # УТИЛИТЫ
@@ -61,14 +68,33 @@ def save_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f)
 
+def load_text(path):
+    if not os.path.exists(path):
+        return None
+    return open(path).read().strip()
+
+def save_text(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+def msg_hash(text):
+    return str(abs(hash(text)))
+
 def send_telegram(text):
     try:
+        h = msg_hash(text)
+        last_h = load_text(MSG_HASH_FILE)
+
+        if h == last_h:
+            print("⏭ Анти-дубль: сообщение пропущено", flush=True)
+            return
+
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": text
-        }
+        payload = {"chat_id": CHAT_ID, "text": text}
         requests.post(url, json=payload, timeout=10)
+
+        save_text(MSG_HASH_FILE, h)
+
     except Exception as e:
         print("TELEGRAM ERROR:", e, flush=True)
 
@@ -76,7 +102,7 @@ def send_telegram(text):
 # COINGECKO
 # =========================
 
-def get_coingecko_data():
+def get_coingecko():
     url = f"https://api.coingecko.com/api/v3/coins/{COIN_ID}"
     r = requests.get(url, timeout=20).json()
 
@@ -91,7 +117,7 @@ def get_coingecko_data():
 # DEX SCREENER
 # =========================
 
-def get_dex_data():
+def get_dex():
     url = "https://api.dexscreener.com/latest/dex/search/?q=SOL"
     r = requests.get(url, timeout=20).json()
 
@@ -104,12 +130,11 @@ def get_dex_data():
     return {
         "dex": p.get("dexId"),
         "liquidity": float(p["liquidity"]["usd"]),
-        "volume": float(p["volume"]["h24"]),
-        "price": float(p["priceUsd"])
+        "volume": float(p["volume"]["h24"])
     }
 
 # =========================
-# RSI / ATR (УПРОЩЁННО, СТАБИЛЬНО)
+# RSI / ATR (стабильные)
 # =========================
 
 def calc_rsi(price):
@@ -119,33 +144,40 @@ def calc_atr(price):
     return round(price * 0.005, 6)
 
 # =========================
-# РАСЧЁТ ПОЗИЦИИ
+# РИСК-МЕНЕДЖМЕНТ
 # =========================
 
 def calc_position(entry, stop):
     risk_money = DEPOSIT * (RISK_PERCENT / 100)
-    sl_distance = abs(entry - stop)
-    size = risk_money / sl_distance if sl_distance > 0 else 0
+    sl_dist = abs(entry - stop)
+    size = risk_money / sl_dist if sl_dist > 0 else 0
     return round(size, 4), round(risk_money, 2)
 
 # =========================
-# ОСНОВНАЯ ЛОГИКА
+# ОСНОВНОЙ ЦИКЛ
 # =========================
 
 def run_bot():
-    info_state = load_json(INFO_STATE_FILE, {})
-    last_signal = info_state.get("last_signal")
+    state = load_json(STATE_FILE, {})
+    last_signal = state.get("last_signal")
 
-    send_telegram(
-        "✅ Бот запущен.\n"
-        "РЕЖИМ: Стратегия + Risk 1% + TP1/TP2\n"
-        "Источник: CoinGecko + DEX"
-    )
+    # ✅ Стартовое сообщение 1 раз в сутки
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    last_start = load_text(START_FILE)
+
+    if last_start != today:
+        send_telegram(
+            "✅ Бот запущен\n"
+            "Режим: Стратегия + Risk 1% + TP1/TP2\n"
+            "Источник: CoinGecko + DEX\n"
+        )
+        save_text(START_FILE, today)
 
     while True:
         try:
-            price, cap, cap_change, price_change = get_coingecko_data()
-            dex = get_dex_data()
+            price, cap, cap_change, price_change = get_coingecko()
+            dex = get_dex()
+
             if dex is None:
                 time.sleep(CHECK_INTERVAL)
                 continue
@@ -153,7 +185,6 @@ def run_bot():
             rsi = calc_rsi(price)
             atr = calc_atr(price)
 
-            # Анти-дубль по ключевым данным
             snapshot = {
                 "price": round(price, 2),
                 "cap": round(cap, 0),
@@ -161,16 +192,17 @@ def run_bot():
                 "vol": round(dex["volume"], 0)
             }
 
-            last_snapshot = info_state.get("snapshot")
-            if last_snapshot == snapshot:
+            if state.get("snapshot") == snapshot:
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            info_state["snapshot"] = snapshot
+            state["snapshot"] = snapshot
+
+            # =========================
+            # СТРАТЕГИЯ
+            # =========================
 
             signal = None
-
-            # ✅ СТРАТЕГИЯ
             if rsi < 35:
                 signal = "LONG"
             elif rsi > 65:
@@ -193,7 +225,7 @@ def run_bot():
                 size, risk_money = calc_position(entry, stop)
 
                 msg = (
-                    f"📊 {ALT.upper()} | СИГНАЛ: {signal}\n\n"
+                    f"📊 {ALT} | СИГНАЛ: {signal}\n\n"
                     f"Цена: {round(price,2)}$\n"
                     f"RSI: {rsi}\n"
                     f"ATR: {atr}\n\n"
@@ -212,9 +244,10 @@ def run_bot():
                 )
 
                 send_telegram(msg)
-                info_state["last_signal"] = signal
+                state["last_signal"] = signal
+                last_signal = signal
 
-            save_json(INFO_STATE_FILE, info_state)
+            save_json(STATE_FILE, state)
 
         except Exception as e:
             print("BOT ERROR:", e, flush=True)
@@ -222,7 +255,7 @@ def run_bot():
         time.sleep(CHECK_INTERVAL)
 
 # =========================
-# ЗАПУСК
+# START
 # =========================
 
 if __name__ == "__main__":
