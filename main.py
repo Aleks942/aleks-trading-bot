@@ -246,14 +246,12 @@ def run_bot():
 # =========================
 
 if __name__ == "__main__":
-    print("=== BEFORE RUN_BOT ===", flush=True)
-
+    print("=== MAIN LOOP STARTED ===", flush=True)
     try:
-        run_bot()
+        while True:
+            run_bot()
+            time.sleep(5)
     except Exception as e:
-        print("❌ FATAL ERROR IN run_bot:", e, flush=True)
-
-        # ЖЕСТКО ДЕРЖИМ ПРОЦЕСС ЖИВЫМ,
-        # ЧТОБЫ RAILWAY НЕ ПЕРЕЗАПУСКАЛ КОНТЕЙНЕР
+        print("FATAL ERROR:", e, flush=True)
         while True:
             time.sleep(60)
