@@ -1,5 +1,4 @@
 aiogram==3.5.0
-
 pandas
 numpy
 requests
@@ -7,3 +6,4 @@ aiohttp
 python-dotenv
 fastapi
 uvicorn
+ccxt
