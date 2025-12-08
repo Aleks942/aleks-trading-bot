@@ -5,7 +5,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 4 — STRATEGY MODE) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 4.1 — MULTI ALT STRATEGY) ===", flush=True)
 
 # =========================
 # ПЕРЕМЕННЫЕ
@@ -30,12 +30,25 @@ ATR_MULTIPLIER = 1.5
 # СПИСОК ТОКЕНОВ
 # =========================
 BIG_TOKENS = ["bitcoin", "ethereum"]  # фон рынка
-ALT_TOKENS = ["solana"]  # пока работаем ТОЛЬКО с SOL для стабильности
+
+ALT_TOKENS = [
+    "solana",
+    "near",
+    "arbitrum",
+    "mina",
+    "starknet",
+    "zksync-era"
+]
 
 COINGECKO_IDS = {
     "bitcoin": "bitcoin",
     "ethereum": "ethereum",
     "solana": "solana",
+    "near": "near",
+    "arbitrum": "arbitrum",
+    "mina": "mina",
+    "starknet": "starknet",
+    "zksync-era": "zksync-era"
 }
 
 # =========================
@@ -54,9 +67,9 @@ def send_telegram(message: str):
         print("❌ TELEGRAM ERROR:", e, flush=True)
 
 # =========================
-# COINGECKO — СВЕЧИ (для RSI + ATR)
+# COINGECKO — СВЕЧИ
 # =========================
-def get_ohlc_from_coingecko(coin_id: str, minutes: int = 120):
+def get_ohlc_from_coingecko(coin_id: str):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
         params = {"vs_currency": "usd", "days": 1}
@@ -64,7 +77,7 @@ def get_ohlc_from_coingecko(coin_id: str, minutes: int = 120):
         data = r.json()
 
         prices = data.get("prices", [])
-        if len(prices) < 50:
+        if len(prices) < 60:
             return None
 
         closes = [p[1] for p in prices]
@@ -137,65 +150,64 @@ def make_signal(token: str):
     atr = calculate_atr(df, ATR_PERIOD)
     price = float(df["close"].iloc[-1])
 
-    # ✅ ПРОСТАЯ ЛОГИКА
     signal = "NEUTRAL"
-
     if rsi < 30:
         signal = "LONG"
     elif rsi > 70:
         signal = "SHORT"
 
-    stop = None
-    target = None
+    if signal == "NEUTRAL":
+        return None
 
     if signal == "LONG":
         stop = price - atr * ATR_MULTIPLIER
         target = price + atr * ATR_MULTIPLIER
-
-    if signal == "SHORT":
+    else:
         stop = price + atr * ATR_MULTIPLIER
         target = price - atr * ATR_MULTIPLIER
 
     return {
         "token": token.upper(),
-        "price": round(price, 4),
+        "price": round(price, 6),
         "rsi": rsi,
         "atr": atr,
         "signal": signal,
-        "stop": round(stop, 4) if stop else None,
-        "target": round(target, 4) if target else None
+        "stop": round(stop, 6),
+        "target": round(target, 6)
     }
 
 # =========================
 # ОСНОВНОЙ ЦИКЛ
 # =========================
 def run_bot():
-    print("=== BOT LOOP STARTED (STEP 4 — STRATEGY MODE) ===", flush=True)
+    print("=== BOT LOOP STARTED (STEP 4.1 — MULTI ALT MODE) ===", flush=True)
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-            report = "<b>📈 СИГНАЛЫ (ШАГ 4)</b>\n\n"
+            report = "<b>📈 СИГНАЛЫ (ШАГ 4.1 — АЛЬТЫ)</b>\n\n"
 
             # ФОН РЫНКА
             for big in BIG_TOKENS:
-                df = get_ohlc_from_coingecko(COINGECKO_IDS[big])
-                if df is not None:
-                    rsi_bg = calculate_rsi(df)
-                    price_bg = round(float(df["close"].iloc[-1]), 2)
+                df_bg = get_ohlc_from_coingecko(COINGECKO_IDS[big])
+                if df_bg is not None:
+                    rsi_bg = calculate_rsi(df_bg)
+                    price_bg = round(float(df_bg["close"].iloc[-1]), 2)
                     report += f"<b>{big.upper()}</b> | Цена: {price_bg}$ | RSI: {rsi_bg}\n\n"
 
-            # АЛЬТЫ (СИГНАЛЫ)
+            signals_found = False
+
+            # АЛЬТЫ
             for alt in ALT_TOKENS:
                 dex_data = get_dex_data_alt(alt)
                 if not dex_data:
                     continue
 
                 sig = make_signal(alt)
-                if not sig or sig["signal"] == "NEUTRAL":
+                if not sig:
                     continue
 
+                signals_found = True
                 liquidity, volume, dex = dex_data
 
                 report += (
@@ -211,8 +223,10 @@ def run_bot():
                     f"Объём 24ч: {round(volume,2)}$\n\n"
                 )
 
-            report += f"⏱ UTC: {now}"
+            if not signals_found:
+                report += "Пока нет торговых сигналов по альтам.\n\n"
 
+            report += f"⏱ UTC: {now}"
             send_telegram(report)
 
         except Exception as e:
@@ -225,8 +239,8 @@ def run_bot():
 # =========================
 if __name__ == "__main__":
     try:
-        print("=== MAIN ENTERED (STEP 4) ===", flush=True)
-        send_telegram("✅ ШАГ 4 активирован. Подключены RSI + ATR + сигналы от DEX + CoinGecko.")
+        print("=== MAIN ENTERED (STEP 4.1) ===", flush=True)
+        send_telegram("✅ ШАГ 4.1 активирован. Сигналы считаются по нескольким альтам.")
         run_bot()
     except Exception as e:
         print("🔥 FATAL START ERROR:", e, flush=True)
