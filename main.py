@@ -1,4 +1,4 @@
-# === ШАГ 6.1 — TP1 / TP2 (1R / 2R) ===
+# === ШАГ 7 — EMA 50 / EMA 200 (Фильтр глобального тренда) ===
 
 import os
 import time
@@ -8,7 +8,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 6.1 — TP1 / TP2) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 7 — EMA FILTER) ===", flush=True)
 
 load_dotenv()
 
@@ -30,13 +30,17 @@ ALT_MIN_VOLUME = 10_000
 # ===== ПАРАМЕТРЫ =====
 RSI_PERIOD = 14
 ATR_PERIOD = 14
-ATR_MULTIPLIER = 1.0  # 1R
+ATR_MULTIPLIER = 1.0
 
 RSI_LONG_LEVEL = 35
 RSI_SHORT_LEVEL = 65
 
+EMA_FAST = 50
+EMA_SLOW = 200
+
 ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync-era"]
 
+# ===== СОСТОЯНИЕ =====
 def load_last_states():
     if not os.path.exists(STATE_FILE):
         return {}
@@ -50,6 +54,7 @@ def save_last_states(states):
     with open(STATE_FILE, "w") as f:
         json.dump(states, f)
 
+# ===== TELEGRAM =====
 def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -58,19 +63,21 @@ def send_telegram(message):
     except:
         pass
 
+# ===== COINGECKO =====
 def get_ohlc_from_coingecko(coin_id):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-        params = {"vs_currency": "usd", "days": 1}
+        params = {"vs_currency": "usd", "days": 2}
         data = requests.get(url, params=params, timeout=20).json()
         prices = data.get("prices", [])
-        if len(prices) < 60:
+        if len(prices) < 300:
             return None
         closes = [x[1] for x in prices]
         return pd.DataFrame({"close": closes})
     except:
         return None
 
+# ===== RSI / ATR / EMA =====
 def calculate_rsi(df):
     delta = df["close"].diff()
     gain = delta.where(delta > 0, 0)
@@ -85,6 +92,10 @@ def calculate_atr(df):
     tr = df["close"].diff().abs()
     return round(float(tr.rolling(ATR_PERIOD).mean().dropna().iloc[-1]), 6)
 
+def calculate_ema(df, period):
+    return round(float(df["close"].ewm(span=period).mean().iloc[-1]), 6)
+
+# ===== DEX =====
 def get_dex_data_alt(query):
     try:
         url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
@@ -105,13 +116,14 @@ def get_dex_data_alt(query):
     except:
         return None
 
+# ===== ОСНОВНОЙ ЦИКЛ =====
 def run_bot():
     last_states = load_last_states()
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            report = "<b>📈 СИГНАЛЫ (ШАГ 6.1 — TP1 / TP2)</b>\n\n"
+            report = "<b>📈 СИГНАЛЫ (ШАГ 7 — EMA ФИЛЬТР)</b>\n\n"
 
             btc_df = get_ohlc_from_coingecko("bitcoin")
             if btc_df is None:
@@ -123,14 +135,12 @@ def run_bot():
 
             report += f"<b>BITCOIN</b> | Цена: {btc_price}$ | RSI: {btc_rsi}\n\n"
 
-            allow_long = btc_rsi <= RSI_SHORT_LEVEL
-            allow_short = btc_rsi >= RSI_LONG_LEVEL
-
             signals_found = False
 
             for alt in ALT_TOKENS:
                 dex_data = get_dex_data_alt(alt)
                 df = get_ohlc_from_coingecko(alt)
+
                 if not dex_data or df is None:
                     continue
 
@@ -138,10 +148,21 @@ def run_bot():
                 atr = calculate_atr(df)
                 price = float(df["close"].iloc[-1])
 
+                ema50 = calculate_ema(df, EMA_FAST)
+                ema200 = calculate_ema(df, EMA_SLOW)
+
+                # === ТРЕНД ФИЛЬТР ===
+                trend = "FLAT"
+                if ema50 > ema200:
+                    trend = "UP"
+                elif ema50 < ema200:
+                    trend = "DOWN"
+
                 signal = "NEUTRAL"
-                if rsi < RSI_LONG_LEVEL and allow_long:
+
+                if rsi < RSI_LONG_LEVEL and trend == "UP":
                     signal = "LONG"
-                elif rsi > RSI_SHORT_LEVEL and allow_short:
+                elif rsi > RSI_SHORT_LEVEL and trend == "DOWN":
                     signal = "SHORT"
 
                 if last_states.get(alt) == signal:
@@ -171,11 +192,14 @@ def run_bot():
 
                 report += (
                     f"<b>{alt.upper()}</b>\n"
+                    f"ТРЕНД: {trend}\n"
+                    f"EMA50: {ema50}\n"
+                    f"EMA200: {ema200}\n"
                     f"СИГНАЛ: <b>{signal}</b>\n"
                     f"Вход: {round(price,6)}\n"
                     f"STOP: {round(stop,6)}\n"
-                    f"TP1 (50%): {round(tp1,6)}\n"
-                    f"TP2 (50%): {round(tp2,6)}\n"
+                    f"TP1: {round(tp1,6)}\n"
+                    f"TP2: {round(tp2,6)}\n"
                     f"Размер: {round(position_size,6)}\n"
                     f"Прибыль TP1: ~{round(profit_tp1,2)}$\n"
                     f"Прибыль TP2: ~{round(profit_tp2,2)}$\n"
@@ -184,7 +208,7 @@ def run_bot():
                 )
 
             if not signals_found:
-                report += "Нет новых сигналов (TP1/TP2 активны).\n\n"
+                report += "Нет новых сигналов (EMA-фильтр активен).\n\n"
 
             report += f"⏱ UTC: {now}"
             send_telegram(report)
@@ -195,5 +219,5 @@ def run_bot():
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    send_telegram("✅ ШАГ 6.1 активирован. TP1 / TP2 (1R / 2R).")
+    send_telegram("✅ ШАГ 7 активирован. Фильтр по тренду EMA 50 / EMA 200.")
     run_bot()
