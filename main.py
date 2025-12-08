@@ -4,7 +4,7 @@ import requests
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 3.1 — SMART FILTERS) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 3.2 — BTC/ETH CG ONLY) ===", flush=True)
 
 # =========================
 # ПЕРЕМЕННЫЕ
@@ -16,19 +16,15 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 60 * 5  # 5 минут
 
-# ФИЛЬТРЫ
-BTC_ETH_MIN_LIQUIDITY = 500_000
-BTC_ETH_MIN_VOLUME = 300_000
-
+# ФИЛЬТРЫ ДЛЯ АЛЬТОВ (DEX)
 ALT_MIN_LIQUIDITY = 10_000
 ALT_MIN_VOLUME = 10_000
 
 # =========================
 # СПИСОК ТОКЕНОВ
 # =========================
-TOKENS = [
-    "bitcoin",
-    "ethereum",
+BIG_TOKENS = ["bitcoin", "ethereum"]  # только CoinGecko
+ALT_TOKENS = [
     "solana",
     "near",
     "arbitrum",
@@ -68,45 +64,7 @@ def send_telegram(message: str):
         print("❌ TELEGRAM EXCEPTION:", e, flush=True)
 
 # =========================
-# DEX SCREENER (ЛИКВИДНОСТЬ + ОБЪЁМ)
-# =========================
-def get_dex_data(query: str, is_big_token: bool):
-    try:
-        url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
-        r = requests.get(url, timeout=15)
-        data = r.json()
-
-        if "pairs" not in data or len(data["pairs"]) == 0:
-            return None
-
-        pairs_sorted = sorted(
-            data["pairs"],
-            key=lambda x: x.get("liquidity", {}).get("usd", 0),
-            reverse=True
-        )
-
-        pair = pairs_sorted[0]
-
-        liquidity = pair.get("liquidity", {}).get("usd", 0)
-        volume_24h = pair.get("volume", {}).get("h24", 0)
-        dex = pair.get("dexId")
-
-        # РАЗНЫЕ ФИЛЬТРЫ
-        if is_big_token:
-            if liquidity < BTC_ETH_MIN_LIQUIDITY or volume_24h < BTC_ETH_MIN_VOLUME:
-                return None
-        else:
-            if liquidity < ALT_MIN_LIQUIDITY or volume_24h < ALT_MIN_VOLUME:
-                return None
-
-        return liquidity, volume_24h, dex
-
-    except Exception as e:
-        print("DEX ERROR:", e, flush=True)
-        return None
-
-# =========================
-# COINGECKO — ЭТАЛОН ЦЕНЫ
+# COINGECKO — ЦЕНА (ВСЕ)
 # =========================
 def get_coingecko_price(coin_id: str):
     try:
@@ -127,25 +85,70 @@ def get_coingecko_price(coin_id: str):
         return None
 
 # =========================
+# DEX SCREENER — ТОЛЬКО ДЛЯ АЛЬТОВ
+# =========================
+def get_dex_data_alt(query: str):
+    try:
+        url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
+        r = requests.get(url, timeout=15)
+        data = r.json()
+
+        if "pairs" not in data or len(data["pairs"]) == 0:
+            return None
+
+        pairs_sorted = sorted(
+            data["pairs"],
+            key=lambda x: x.get("liquidity", {}).get("usd", 0),
+            reverse=True
+        )
+
+        pair = pairs_sorted[0]
+
+        liquidity = pair.get("liquidity", {}).get("usd", 0)
+        volume_24h = pair.get("volume", {}).get("h24", 0)
+        dex = pair.get("dexId")
+
+        if liquidity < ALT_MIN_LIQUIDITY or volume_24h < ALT_MIN_VOLUME:
+            return None
+
+        return liquidity, volume_24h, dex
+
+    except Exception as e:
+        print("DEX ERROR:", e, flush=True)
+        return None
+
+# =========================
 # ОСНОВНОЙ ЦИКЛ
 # =========================
 def run_bot():
-    print("=== BOT LOOP STARTED (STEP 3.1 — SMART MODE) ===", flush=True)
+    print("=== BOT LOOP STARTED (STEP 3.2 — FINAL CLEAN MODE) ===", flush=True)
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-            report = "<b>🧠 УМНЫЕ ФИЛЬТРЫ (ШАГ 3.1)</b>\n"
-            report += "BTC/ETH — жёсткие фильтры\n"
-            report += "Альты — мягкие фильтры\n"
-            report += "Цена = CoinGecko | Объём/Ликвидность = DEX\n\n"
+            report = "<b>✅ ВЫРОВНЕННЫЕ ДАННЫЕ (ШАГ 3.2)</b>\n"
+            report += "BTC/ETH: только CoinGecko\n"
+            report += "Альты: CoinGecko + DEX\n\n"
 
-            for token in TOKENS:
-                is_big = token in ["bitcoin", "ethereum"]
-
+            # --- BTC / ETH (ТОЛЬКО CoinGecko)
+            for token in BIG_TOKENS:
                 cg_price = get_coingecko_price(COINGECKO_IDS[token])
-                dex_data = get_dex_data(token, is_big)
+
+                if not cg_price:
+                    report += f"<b>{token.upper()}</b>: нет данных CG\n\n"
+                    continue
+
+                report += (
+                    f"<b>{token.upper()}</b>\n"
+                    f"Цена (CG): {cg_price}$\n"
+                    f"DEX: не используется\n\n"
+                )
+
+            # --- АЛЬТЫ (CoinGecko + DEX)
+            for token in ALT_TOKENS:
+                cg_price = get_coingecko_price(COINGECKO_IDS[token])
+                dex_data = get_dex_data_alt(token)
 
                 if not cg_price or not dex_data:
                     report += f"<b>{token.upper()}</b>: недостаточно данных\n\n"
@@ -174,8 +177,8 @@ def run_bot():
 # =========================
 if __name__ == "__main__":
     try:
-        print("=== MAIN ENTERED (STEP 3.1) ===", flush=True)
-        send_telegram("✅ Включены разные фильтры для BTC/ETH и альтов (ШАГ 3.1)")
+        print("=== MAIN ENTERED (STEP 3.2) ===", flush=True)
+        send_telegram("✅ Активирован режим BTC/ETH только по CoinGecko (ШАГ 3.2)")
         run_bot()
     except Exception as e:
         print("🔥 FATAL START ERROR:", e, flush=True)
