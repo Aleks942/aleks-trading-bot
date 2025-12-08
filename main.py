@@ -1,294 +1,231 @@
-import os
-import asyncio
+import time
 import requests
-import pandas as pd
-from dotenv import load_dotenv
+import statistics
+from telegram import Bot
 
-from aiogram import Bot, Dispatcher, Router
-from aiogram.enums import ParseMode
-from aiogram.filters import Command
-from aiogram.types import Message, Update
-from aiogram.client.default import DefaultBotProperties
+# =========================
+# НАСТРОЙКИ
+# =========================
+TELEGRAM_TOKEN = "ВСТАВЬ_СЮДА_СВОЙ_ТОКЕН"
+CHAT_ID = "ВСТАВЬ_СЮДА_CHAT_ID"
 
-from fastapi import FastAPI, Request
+TIMEFRAME = "15m"
+TREND_TIMEFRAME = "1h"
+CHECK_INTERVAL = 60  # проверка раз в минуту
 
-# ================== ENV ======================
+BASE_URL = "https://api.binance.com/api/v3/klines"
 
-load_dotenv()
+bot = Bot(token=TELEGRAM_TOKEN)
 
-TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# =========================
+# ПАМЯТЬ АНТИДУБЛИКАТА
+# =========================
+last_signal_type = {}
+last_signal_price = {}
 
-# ================== BOT ======================
+# =========================
+# СПИСОК АЛЬТОВ (ВСЕ USDT)
+# =========================
+def get_all_symbols():
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    data = requests.get(url, timeout=10).json()
 
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-router = Router()
-dp.include_router(router)
+    symbols = []
+    for s in data["symbols"]:
+        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING":
+            symbols.append(s["symbol"])
+    return symbols
 
-# ================== TIMEFRAMES ======================
 
-TF_MAP = {
-    "1m": "1m", "5m": "5m", "15m": "15m",
-    "30m": "30m", "1h": "1H", "4h": "4H", "1d": "1D",
-}
-
-# ================== OKX DATA ======================
-
-def get_ohlcv(symbol="BTCUSDT", tf="1h"):
-    try:
-        inst = symbol.replace("USDT", "-USDT")
-        bar = TF_MAP.get(tf, "1H")
-
-        url = "https://www.okx.com/api/v5/market/candles"
-        params = {"instId": inst, "bar": bar, "limit": 200}
-
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-
-        if "data" not in data:
-            return None
-
-        df = pd.DataFrame(data["data"], columns=[
-            "time", "open", "high", "low", "close",
-            "volume", "volCcy", "volCcyQuote", "confirm"
-        ])
-
-        df[["open", "high", "low", "close", "volume"]] = df[
-            ["open", "high", "low", "close", "volume"]
-        ].astype(float)
-
-        df = df.iloc[::-1].reset_index(drop=True)
-        return df
-
-    except:
-        return None
-
-# ================== ANALYSIS ======================
-
-def analyze_symbol(symbol="BTCUSDT", tf="1h"):
-    df = get_ohlcv(symbol, tf)
-    if df is None or len(df) < 50:
-        return {"error": "no data"}
-
-    close = df["close"]
-    high = df["high"]
-    low = df["low"]
-    volume = df["volume"]
-
-    last_close = close.iloc[-1]
-
-    ema20 = close.ewm(span=20).mean().iloc[-1]
-    ema50 = close.ewm(span=50).mean().iloc[-1]
-    trend = "up" if ema20 > ema50 else "down"
-
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-
-    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
-    rsi = 100 - (100 / (1 + rs))
-    rsi = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50
-
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs()
-    ], axis=1).max(axis=1)
-
-    atr = tr.rolling(14).mean().iloc[-1]
-    atr_ratio = atr / last_close if last_close else 0
-
-    avg_vol = volume.rolling(20).mean().iloc[-2]
-    last_vol = volume.iloc[-1]
-    volume_ratio = last_vol / avg_vol if avg_vol else 1
-
-    # ---- ЖЁСТКИЕ ТОРГОВЫЕ БЛОКИ ----
-    block_long = rsi > 70
-    block_short = rsi < 30
-
-    score = 0
-    reasons = []
-
-    if trend == "up":
-        score += 1
-        reasons.append("Тренд вверх")
-    else:
-        score -= 1
-        reasons.append("Тренд вниз")
-
-    if rsi > 60:
-        score += 1
-        reasons.append("RSI > 60")
-    elif rsi < 40:
-        score -= 1
-        reasons.append("RSI < 40")
-
-    if volume_ratio > 1.3:
-        score += 1
-        reasons.append("Объём высокий")
-    elif volume_ratio < 0.7:
-        score -= 1
-        reasons.append("Объём слабый")
-
-    if atr_ratio < 0.003:
-        score -= 1
-        reasons.append("Флет")
-
-    # ---- ФИНАЛЬНЫЙ СИГНАЛ ----
-    if score >= 3 and not block_long:
-        signal = "LONG"
-    elif score <= -3 and not block_short:
-        signal = "SHORT"
-    else:
-        signal = "NEUTRAL"
-
-    strength = min(abs(score), 5)
-
-    entry = float(last_close)
-    sl = tp1 = tp2 = None
-
-    if signal == "LONG":
-        sl = entry - 1.5 * atr
-        tp1 = entry + 1.5 * atr
-        tp2 = entry + 3 * atr
-    elif signal == "SHORT":
-        sl = entry + 1.5 * atr
-        tp1 = entry - 1.5 * atr
-        tp2 = entry - 3 * atr
-
-    return {
-        "signal": signal,
-        "strength": strength,
-        "reasons": reasons,
-        "entry": entry,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "atr": float(atr),
-        "atr_ratio": float(atr_ratio),
-        "rsi": float(rsi),
-        "volume_ratio": float(volume_ratio)
+# =========================
+# ЗАГРУЗКА СВЕЧЕЙ
+# =========================
+def get_klines(symbol, interval, limit=200):
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
     }
+    return requests.get(BASE_URL, params=params, timeout=10).json()
 
-# ================== BTC HEARTBEAT ======================
 
-LAST_BTC_SIGNAL = None
+# =========================
+# ИНДИКАТОРЫ
+# =========================
+def ema(data, period):
+    k = 2 / (period + 1)
+    ema_val = data[0]
+    for price in data[1:]:
+        ema_val = price * k + ema_val * (1 - k)
+    return ema_val
 
-async def btc_heartbeat():
-    global LAST_BTC_SIGNAL
-    await asyncio.sleep(20)
+
+def rsi_calc(closes, period=14):
+    gains, losses = [], []
+    for i in range(1, period + 1):
+        diff = closes[i] - closes[i - 1]
+        if diff >= 0:
+            gains.append(diff)
+        else:
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period if losses else 0.0001
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def atr_calc(highs, lows, closes, period=14):
+    trs = []
+    for i in range(1, period + 1):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1])
+        )
+        trs.append(tr)
+
+    atr = sum(trs) / period
+    return (atr / closes[-1]) * 100
+
+
+# =========================
+# ОЦЕНКА СИГНАЛА
+# =========================
+def score_signal(volume_x, atr, trend_ok, btc_ok):
+    score = 0
+    if volume_x > 2: score += 3
+    elif volume_x > 1.5: score += 2
+    elif volume_x > 1.2: score += 1
+    if btc_ok: score += 3
+    if trend_ok: score += 2
+    if atr > 0.25: score += 2
+    return score
+
+
+# =========================
+# STOP / TAKE
+# =========================
+def calc_levels(price, atr_percent, direction):
+    atr_abs = price * (atr_percent / 100)
+
+    if direction == "LONG":
+        sl = price - atr_abs * 1.2
+        tp1 = price + atr_abs * 1.5
+        tp2 = price + atr_abs * 2.5
+        tp3 = price + atr_abs * 4
+    else:
+        sl = price + atr_abs * 1.2
+        tp1 = price - atr_abs * 1.5
+        tp2 = price - atr_abs * 2.5
+        tp3 = price - atr_abs * 4
+
+    return round(sl, 4), round(tp1, 4), round(tp2, 4), round(tp3, 4)
+
+
+# =========================
+# ГЛАВНАЯ ЛОГИКА
+# =========================
+def process_symbol(symbol, btc_trend):
+
+    global last_signal_type, last_signal_price
+
+    try:
+        klines = get_klines(symbol, TIMEFRAME)
+        closes = [float(k[4]) for k in klines]
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[3]) for k in klines]
+        volumes = [float(k[5]) for k in klines]
+
+        price = closes[-1]
+        rsi = round(rsi_calc(closes), 2)
+        atr = round(atr_calc(highs, lows, closes), 2)
+
+        ema200 = ema(closes[-200:], 200)
+
+        avg_volume = statistics.mean(volumes[-20:])
+        volume_x = round(volumes[-1] / avg_volume, 2)
+
+        trend_ok = price > ema200
+        volume_ok = volume_x > 2
+        atr_ok = atr > 0.25
+
+        signal_type = None
+
+        if trend_ok and volume_ok and atr_ok and rsi < 75 and btc_trend == "LONG":
+            signal_type = "LONG"
+
+        elif not trend_ok and volume_ok and atr_ok and rsi > 25 and btc_trend == "SHORT":
+            signal_type = "SHORT"
+
+        if signal_type:
+            if symbol in last_signal_type:
+                if last_signal_type[symbol] == signal_type and abs(price - last_signal_price[symbol]) / price < 0.0015:
+                    return
+
+            score = score_signal(volume_x, atr, trend_ok, btc_trend == signal_type)
+
+            if score < 7:
+                return
+
+            sl, tp1, tp2, tp3 = calc_levels(price, atr, signal_type)
+
+            text = f"""
+🚀 {symbol} {signal_type} | 15m
+Оценка: {score}/10
+BTC-фильтр: ✅
+
+📍 Entry: {round(price, 4)}
+🛑 Stop: {sl}
+🎯 TP1: {tp1}
+🎯 TP2: {tp2}
+🎯 TP3: {tp3}
+
+ATR: {atr}%
+Объём: {volume_x}x
+RSI: {rsi}
+Риск: Средний
+            """
+
+            bot.send_message(CHAT_ID, text)
+
+            last_signal_type[symbol] = signal_type
+            last_signal_price[symbol] = price
+
+    except Exception as e:
+        print(symbol, "ERROR:", e)
+
+
+# =========================
+# BTC ФИЛЬТР
+# =========================
+def get_btc_trend():
+    btc_klines = get_klines("BTCUSDT", TREND_TIMEFRAME)
+    closes = [float(k[4]) for k in btc_klines]
+    ema200 = ema(closes[-200:], 200)
+    price = closes[-1]
+
+    return "LONG" if price > ema200 else "SHORT"
+
+
+# =========================
+# ЗАПУСК
+# =========================
+def main():
+
+    symbols = get_all_symbols()
+    print("Монет:", len(symbols))
 
     while True:
-        try:
-            data = analyze_symbol("BTCUSDT", "15m")
-            if "error" in data:
-                await asyncio.sleep(900)
-                continue
+        btc_trend = get_btc_trend()
+        print("BTC тренд:", btc_trend)
 
-            key = f"{data['signal']}_{data['strength']}"
+        for symbol in symbols:
+            process_symbol(symbol, btc_trend)
 
-            if key == LAST_BTC_SIGNAL:
-                await asyncio.sleep(900)
-                continue
+        time.sleep(CHECK_INTERVAL)
 
-            LAST_BTC_SIGNAL = key
 
-            if data["signal"] == "LONG":
-                mood = "🟢 Рынок под ЛОНГ"
-            elif data["signal"] == "SHORT":
-                mood = "🔴 Рынок под ШОРТ"
-            else:
-                mood = "⚪ Флет / ожидание"
-
-            levels = ""
-            if data["sl"] is not None:
-                levels = (
-                    f"\nУровни:\n"
-                    f"Вход: {round(data['entry'], 2)}\n"
-                    f"SL: {round(data['sl'], 2)}\n"
-                    f"TP1: {round(data['tp1'], 2)}\n"
-                    f"TP2: {round(data['tp2'], 2)}\n"
-                )
-
-            text = (
-                f"⏱ <b>BTC контроль 15m</b>\n\n"
-                f"{mood}\n\n"
-                f"Сигнал: <b>{data['signal']}</b>\n"
-                f"Сила: {data['strength']}\n"
-                f"{levels}\n"
-                f"RSI: {round(data['rsi'],2)}\n"
-                f"ATR: {round(data['atr_ratio']*100,2)}%\n"
-                f"Объём: {round(data['volume_ratio'],2)}x\n\n"
-                "Причины:\n" +
-                "\n".join(f"- {r}" for r in data["reasons"])
-            )
-
-            await bot.send_message(CHAT_ID, text)
-            await asyncio.sleep(900)
-
-        except Exception as e:
-            print("BTC HEARTBEAT ERROR:", e)
-            await asyncio.sleep(60)
-
-# ================== COMMAND ======================
-
-@router.message(Command("signal"))
-async def signal_cmd(message: Message):
-    parts = message.text.split()
-    symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
-    tf = parts[2] if len(parts) > 2 else "1h"
-
-    data = analyze_symbol(symbol, tf)
-    if "error" in data:
-        await message.answer("❌ Нет данных")
-        return
-
-    levels = ""
-    if data.get("sl") is not None:
-        levels = (
-            "Уровни:\n"
-            f"- Вход: <b>{round(data['entry'], 2)}</b>\n"
-            f"- SL: <b>{round(data['sl'], 2)}</b>\n"
-            f"- TP1: <b>{round(data['tp1'], 2)}</b>\n"
-            f"- TP2: <b>{round(data['tp2'], 2)}</b>\n\n"
-        )
-
-    extra = (
-        f"ATR: {round(data['atr'], 2)} ({round(data['atr_ratio']*100,2)}%)\n"
-        f"RSI: {round(data['rsi'],2)}\n"
-        f"Объём: {round(data['volume_ratio'],2)}x\n\n"
-    )
-
-    text = (
-        f"<b>Сигнал {symbol}</b>\nTF: {tf}\n"
-        f"Направление: <b>{data['signal']}</b>\n"
-        f"Сила: <b>{data['strength']}</b>\n\n"
-        f"{levels}{extra}"
-        "Причины:\n" + "\n".join(f"- {r}" for r in data["reasons"])
-    )
-
-    await message.answer(text)
-
-# ================== FASTAPI ======================
-
-app = FastAPI()
-
-@app.on_event("startup")
-async def on_startup():
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(WEBHOOK_URL)
-    asyncio.create_task(btc_heartbeat())
-
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.json()
-    update = Update(**data)
-    await dp.feed_update(bot, update)
-    return {"ok": True}
-
-@app.get("/")
-async def health():
-    return {"status": "ok"}
+if __name__ == "__main__":
+    main()
