@@ -1,4 +1,4 @@
-# === ШАГ 11 — ЕЖЕДНЕВНЫЙ ОТЧЁТ В 20:30 (ПОЛЬША, UTC+1) ===
+# === ШАГ 12 — КАПИТАЛИЗАЦИЯ + ЛИКВИДАЦИИ (ИНФОРМАЦИОННО) ===
 
 import os
 import time
@@ -8,7 +8,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-print("=== BOT BOOT STARTED (STEP 11 — DAILY REPORT 20:30) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 12 — MARKET CAP + LIQUIDATIONS) ===", flush=True)
 
 load_dotenv()
 
@@ -16,6 +16,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 60 * 5
+
 STATE_FILE = "last_states.json"
 POSITIONS_FILE = "open_positions.json"
 TRADES_LOG_FILE = "trades_log.json"
@@ -23,7 +24,7 @@ DAILY_REPORT_FILE = "daily_report_state.json"
 
 # ===== ВРЕМЯ ОТЧЁТА =====
 REPORT_HOUR = 20
-REPORT_MINUTE = 30   # 20:30 Польша (UTC+1)
+REPORT_MINUTE = 30   # 20:30 Польша (UTC+2)
 
 # ===== РИСК =====
 START_DEPOSIT = 100.0
@@ -45,7 +46,7 @@ EMA_SLOW = 200
 # ===== ТРЕЙЛИНГ =====
 TRAIL_MULT = 1.5
 
-ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync-era"]
+ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync"]
 
 # ===== УТИЛИТЫ =====
 def load_json(path, default):
@@ -70,7 +71,21 @@ def send_telegram(message):
     except:
         pass
 
-# ===== COINGECKO =====
+# ===== COINGECKO (ЦЕНЫ + КАПИТАЛИЗАЦИЯ) =====
+def get_market_data(coin_id):
+    try:
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+        data = requests.get(url, timeout=20).json()["market_data"]
+
+        price = data["current_price"]["usd"]
+        cap = data["market_cap"]["usd"]
+        cap_change = data["market_cap_change_percentage_24h"]
+        price_change = data["price_change_percentage_24h"]
+
+        return price, cap, cap_change, price_change
+    except:
+        return None
+
 def get_ohlc(coin_id):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
@@ -83,6 +98,7 @@ def get_ohlc(coin_id):
     except:
         return None
 
+# ===== ИНДИКАТОРЫ =====
 def rsi(df):
     d = df["close"].diff()
     g = d.where(d > 0, 0)
@@ -123,29 +139,37 @@ def dex_data(query):
     except:
         return None
 
+# ===== ЛИКВИДАЦИИ (АГРЕГАТОР) =====
+def get_liquidations(symbol="BTC"):
+    try:
+        url = f"https://fapi.coinglass.com/api/futures/liquidation_snapshot?symbol={symbol}"
+        r = requests.get(url, timeout=20)
+        data = r.json()["data"]
+
+        long_liq = data["longVolUsd"]
+        short_liq = data["shortVolUsd"]
+
+        return round(long_liq, 2), round(short_liq, 2)
+    except:
+        return None, None
+
 # ===== ЖУРНАЛ =====
 def log_trade(trade):
     log = load_json(TRADES_LOG_FILE, [])
     log.append(trade)
     save_json(TRADES_LOG_FILE, log)
 
-def all_stats():
-    log = load_json(TRADES_LOG_FILE, [])
-    total = sum(t["pnl"] for t in log) if log else 0.0
-    wins = len([t for t in log if t["pnl"] > 0])
-    return len(log), wins, total
-
 # ===== СДЕЛКИ =====
 def open_position(alt, side, price, atr_v, dex):
-    st = price - atr_v if side == "LONG" else price + atr_v
+    stop = price - atr_v if side == "LONG" else price + atr_v
     tp1 = price + atr_v if side == "LONG" else price - atr_v
     tp2 = price + atr_v * 2 if side == "LONG" else price - atr_v * 2
-    size = round(RISK_USD / abs(price - st), 6)
+    size = round(RISK_USD / abs(price - stop), 6)
 
     pos = {
         "alt": alt, "side": side,
         "entry": round(price, 6),
-        "stop": round(st, 6),
+        "stop": round(stop, 6),
         "tp1": round(tp1, 6),
         "tp2": round(tp2, 6),
         "atr": atr_v,
@@ -158,152 +182,56 @@ def open_position(alt, side, price, atr_v, dex):
 
     send_telegram(
         f"<b>ОТКРЫТА СДЕЛКА</b>\n{alt.upper()} {side}\n"
-        f"Вход: {price}\nSTOP: {st}\nTP1: {tp1} | TP2: {tp2}\nРазмер: {size}"
+        f"Вход: {price}\nSTOP: {stop}\nTP1: {tp1} | TP2: {tp2}\nРазмер: {size}"
     )
-    return pos
-
-def close_trade(pos, price):
-    pnl = (price - pos["entry"]) * pos["size"] if pos["side"] == "LONG" else (pos["entry"] - price) * pos["size"]
-
-    trade = {
-        "time": datetime.utcnow().isoformat(),
-        "alt": pos["alt"],
-        "side": pos["side"],
-        "entry": pos["entry"],
-        "exit": round(price, 6),
-        "size": pos["size"],
-        "pnl": round(pnl, 2)
-    }
-
-    log_trade(trade)
-
-    send_telegram(
-        f"✅ <b>СДЕЛКА ЗАКРЫТА</b>\n{pos['alt'].upper()} {pos['side']}\n"
-        f"Вход: {pos['entry']}\nВыход: {price}\n"
-        f"PnL: {round(pnl,2)}$"
-    )
-
-def update_trailing(pos, price):
-    trail = pos["atr"] * TRAIL_MULT
-
-    if pos["side"] == "LONG":
-        if not pos["tp1_done"] and price >= pos["tp1"]:
-            pos["tp1_done"] = True
-            pos["stop"] = pos["entry"]
-        if pos["tp1_done"]:
-            pos["stop"] = max(pos["stop"], price - trail)
-        if price <= pos["stop"]:
-            pos["active"] = False
-            close_trade(pos, price)
-
-    else:
-        if not pos["tp1_done"] and price <= pos["tp1"]:
-            pos["tp1_done"] = True
-            pos["stop"] = pos["entry"]
-        if pos["tp1_done"]:
-            pos["stop"] = min(pos["stop"], price + trail)
-        if price >= pos["stop"]:
-            pos["active"] = False
-            close_trade(pos, price)
 
     return pos
-
-# ===== ДНЕВНОЙ ОТЧЁТ =====
-def send_daily_report():
-    log = load_json(TRADES_LOG_FILE, [])
-    today = datetime.utcnow().date()
-
-    todays = [t for t in log if datetime.fromisoformat(t["time"]).date() == today]
-
-    day_pnl = sum(t["pnl"] for t in todays) if todays else 0.0
-    wins = len([t for t in todays if t["pnl"] > 0])
-    losses = len([t for t in todays if t["pnl"] <= 0])
-
-    total_trades, total_wins, total_pnl = all_stats()
-    deposit = START_DEPOSIT + total_pnl
-    drawdown = round((START_DEPOSIT - deposit) / START_DEPOSIT * 100, 2) if deposit < START_DEPOSIT else 0.0
-
-    report = (
-        f"📊 <b>ДНЕВНОЙ ОТЧЁТ</b>\n\n"
-        f"Дата: {today}\n"
-        f"Сделок за день: {len(todays)}\n"
-        f"Профитных: {wins}\n"
-        f"Убыточных: {losses}\n"
-        f"Дневной PnL: {round(day_pnl,2)}$\n\n"
-        f"Всего сделок: {total_trades}\n"
-        f"Всего профитных: {total_wins}\n"
-        f"Общий PnL: {round(total_pnl,2)}$\n"
-        f"Текущий депозит: {round(deposit,2)}$\n"
-        f"Просадка: {drawdown}%"
-    )
-
-    send_telegram(report)
 
 # ===== ОСНОВНОЙ ЦИКЛ =====
 def run_bot():
     states = load_json(STATE_FILE, {})
     positions = load_json(POSITIONS_FILE, {})
-    report_state = load_json(DAILY_REPORT_FILE, {"last_date": None})
+
+    send_telegram("✅ ШАГ 12 активирован. Капитализация + ликвидации добавлены.")
 
     while True:
         try:
-            now = datetime.utcnow() + timedelta(hours=1)  # Польша UTC+1
-            today_str = now.date().isoformat()
+            now = datetime.utcnow() + timedelta(hours=2)  # Польша UTC+2
 
-            # --- ТРЕЙЛИНГ
-            for alt, pos in list(positions.items()):
-                if not pos["active"]:
-                    continue
-                df = get_ohlc(alt)
-                if df is None:
-                    continue
-                price = float(df["close"].iloc[-1])
-                pos = update_trailing(pos, price)
-                if not pos["active"]:
-                    positions.pop(alt)
-                else:
-                    positions[alt] = pos
+            # === ЛИКВИДАЦИИ BTC (ИНФО)
+            btc_long_liq, btc_short_liq = get_liquidations("BTC")
 
-            save_json(POSITIONS_FILE, positions)
+            if btc_long_liq and btc_short_liq:
+                send_telegram(
+                    f"💥 <b>ЛИКВИДАЦИИ BTC (24ч)</b>\n"
+                    f"LONG: {btc_long_liq}$\n"
+                    f"SHORT: {btc_short_liq}$"
+                )
 
-            # --- ПОИСК СИГНАЛОВ
+            # === АЛЬТЫ + КАПИТАЛИЗАЦИЯ
             for alt in ALT_TOKENS:
-                if alt in positions:
-                    continue
-                dd = dex_data(alt)
                 df = get_ohlc(alt)
-                if not dd or df is None:
+                market = get_market_data(alt)
+                dex = dex_data(alt)
+
+                if not df or not market or not dex:
                     continue
 
+                price, cap, cap_change, price_change = market
                 r = rsi(df)
-                a = atr(df)
-                p = float(df["close"].iloc[-1])
-                e50 = ema(df, EMA_FAST)
-                e200 = ema(df, EMA_SLOW)
 
-                trend = "UP" if (e50 and e200 and e50 > e200) else "DOWN"
-                sig = "LONG" if r < RSI_LONG_LEVEL and trend == "UP" else "SHORT" if r > RSI_SHORT_LEVEL and trend == "DOWN" else "NEUTRAL"
+                liq, vol, dex_name = dex
 
-                if states.get(alt) == sig:
-                    continue
-                states[alt] = sig
-                save_json(STATE_FILE, states)
-
-                if sig != "NEUTRAL":
-                    liq, vol, dex = dd
-                    pos = open_position(alt, sig, p, a, dex)
-                    positions[alt] = pos
-                    save_json(POSITIONS_FILE, positions)
-
-            # --- ДНЕВНОЙ ОТЧЁТ В 20:30
-            if (
-                now.hour == REPORT_HOUR
-                and now.minute >= REPORT_MINUTE
-                and report_state.get("last_date") != today_str
-            ):
-                send_daily_report()
-                report_state["last_date"] = today_str
-                save_json(DAILY_REPORT_FILE, report_state)
+                send_telegram(
+                    f"📊 <b>{alt.upper()}</b>\n"
+                    f"Цена: {price}$\n"
+                    f"Cap: {round(cap,0)}$\n"
+                    f"Cap 24ч: {round(cap_change,2)}%\n"
+                    f"Цена 24ч: {round(price_change,2)}%\n"
+                    f"RSI: {r}\n"
+                    f"DEX: {dex_name}\n"
+                    f"Ликв: {round(liq,0)}$ | Объём: {round(vol,0)}$"
+                )
 
         except Exception as e:
             send_telegram(f"❌ BOT ERROR: {e}")
@@ -311,5 +239,4 @@ def run_bot():
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    send_telegram("✅ ШАГ 11 активирован. Дневной отчёт каждый день в 20:30.")
     run_bot()
