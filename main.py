@@ -20,20 +20,6 @@ CHAT_ID = os.getenv("CHAT_ID")
 # ЖЁСТКАЯ ЗАЩИТА ОТ ДВУХ ЗАПУСКОВ
 # =========================
 
-LOCK_FILE = "bot.lock"
-
-if os.path.exists(LOCK_FILE):
-    print("⛔ Второй процесс остановлен", flush=True)
-    sys.exit()
-
-with open(LOCK_FILE, "w") as f:
-    f.write(str(time.time()))
-
-def cleanup_lock():
-    if os.path.exists(LOCK_FILE):
-        os.remove(LOCK_FILE)
-
-atexit.register(cleanup_lock)
 
 # =========================
 # НАСТРОЙКИ
