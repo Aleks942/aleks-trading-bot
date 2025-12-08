@@ -99,14 +99,15 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
     ], axis=1).max(axis=1)
 
     atr = tr.rolling(14).mean().iloc[-1]
-    if atr is None or atr <= 0:
-        return {"error": "no_volatility"}
-
     atr_ratio = atr / last_close if last_close else 0
 
     avg_vol = volume.rolling(20).mean().iloc[-2]
     last_vol = volume.iloc[-1]
     volume_ratio = last_vol / avg_vol if avg_vol else 1
+
+    # ---- ЖЁСТКИЕ ТОРГОВЫЕ БЛОКИ ----
+    block_long = rsi > 70
+    block_short = rsi < 30
 
     score = 0
     reasons = []
@@ -136,12 +137,15 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
         score -= 1
         reasons.append("Флет")
 
-    if score >= 3:
+    # ---- ФИНАЛЬНЫЙ СИГНАЛ ----
+    if score >= 3 and not block_long:
         signal = "LONG"
-    elif score <= -3:
+    elif score <= -3 and not block_short:
         signal = "SHORT"
     else:
         signal = "NEUTRAL"
+
+    strength = min(abs(score), 5)
 
     entry = float(last_close)
     sl = tp1 = tp2 = None
@@ -157,7 +161,7 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
 
     return {
         "signal": signal,
-        "strength": abs(score),
+        "strength": strength,
         "reasons": reasons,
         "entry": entry,
         "sl": sl,
@@ -169,17 +173,28 @@ def analyze_symbol(symbol="BTCUSDT", tf="1h"):
         "volume_ratio": float(volume_ratio)
     }
 
-# ================== BTC HEARTBEAT 15m ======================
+# ================== BTC HEARTBEAT ======================
+
+LAST_BTC_SIGNAL = None
 
 async def btc_heartbeat():
-    await asyncio.sleep(15)
+    global LAST_BTC_SIGNAL
+    await asyncio.sleep(20)
+
     while True:
         try:
             data = analyze_symbol("BTCUSDT", "15m")
-
             if "error" in data:
                 await asyncio.sleep(900)
                 continue
+
+            key = f"{data['signal']}_{data['strength']}"
+
+            if key == LAST_BTC_SIGNAL:
+                await asyncio.sleep(900)
+                continue
+
+            LAST_BTC_SIGNAL = key
 
             if data["signal"] == "LONG":
                 mood = "🟢 Рынок под ЛОНГ"
@@ -188,11 +203,22 @@ async def btc_heartbeat():
             else:
                 mood = "⚪ Флет / ожидание"
 
+            levels = ""
+            if data["sl"] is not None:
+                levels = (
+                    f"\nУровни:\n"
+                    f"Вход: {round(data['entry'], 2)}\n"
+                    f"SL: {round(data['sl'], 2)}\n"
+                    f"TP1: {round(data['tp1'], 2)}\n"
+                    f"TP2: {round(data['tp2'], 2)}\n"
+                )
+
             text = (
                 f"⏱ <b>BTC контроль 15m</b>\n\n"
                 f"{mood}\n\n"
-                f"Сигнал: {data['signal']}\n"
-                f"Сила: {data['strength']}\n\n"
+                f"Сигнал: <b>{data['signal']}</b>\n"
+                f"Сила: {data['strength']}\n"
+                f"{levels}\n"
                 f"RSI: {round(data['rsi'],2)}\n"
                 f"ATR: {round(data['atr_ratio']*100,2)}%\n"
                 f"Объём: {round(data['volume_ratio'],2)}x\n\n"
@@ -201,7 +227,6 @@ async def btc_heartbeat():
             )
 
             await bot.send_message(CHAT_ID, text)
-
             await asyncio.sleep(900)
 
         except Exception as e:
@@ -215,8 +240,8 @@ async def signal_cmd(message: Message):
     parts = message.text.split()
     symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
     tf = parts[2] if len(parts) > 2 else "1h"
-    data = analyze_symbol(symbol, tf)
 
+    data = analyze_symbol(symbol, tf)
     if "error" in data:
         await message.answer("❌ Нет данных")
         return
@@ -225,14 +250,14 @@ async def signal_cmd(message: Message):
     if data.get("sl") is not None:
         levels = (
             "Уровни:\n"
-            f"- Вход: <b>{round(data['entry'], 6)}</b>\n"
-            f"- SL: <b>{round(data['sl'], 6)}</b>\n"
-            f"- TP1: <b>{round(data['tp1'], 6)}</b>\n"
-            f"- TP2: <b>{round(data['tp2'], 6)}</b>\n\n"
+            f"- Вход: <b>{round(data['entry'], 2)}</b>\n"
+            f"- SL: <b>{round(data['sl'], 2)}</b>\n"
+            f"- TP1: <b>{round(data['tp1'], 2)}</b>\n"
+            f"- TP2: <b>{round(data['tp2'], 2)}</b>\n\n"
         )
 
     extra = (
-        f"ATR: {round(data['atr'], 6)} ({round(data['atr_ratio']*100,2)}%)\n"
+        f"ATR: {round(data['atr'], 2)} ({round(data['atr_ratio']*100,2)}%)\n"
         f"RSI: {round(data['rsi'],2)}\n"
         f"Объём: {round(data['volume_ratio'],2)}x\n\n"
     )
@@ -253,11 +278,8 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    print("STARTUP ✅")
-
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
-
     asyncio.create_task(btc_heartbeat())
 
 @app.post("/webhook")
