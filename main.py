@@ -4,7 +4,7 @@ import requests
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT BOOT STARTED (STEP 3 — DATA CLEANING) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 3.1 — SMART FILTERS) ===", flush=True)
 
 # =========================
 # ПЕРЕМЕННЫЕ
@@ -15,11 +15,16 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 60 * 5  # 5 минут
-MIN_LIQUIDITY_USD = 50000     # фильтр по ликвидности
-MIN_VOLUME_24H_USD = 50000   # фильтр по объёму
+
+# ФИЛЬТРЫ
+BTC_ETH_MIN_LIQUIDITY = 500_000
+BTC_ETH_MIN_VOLUME = 300_000
+
+ALT_MIN_LIQUIDITY = 10_000
+ALT_MIN_VOLUME = 10_000
 
 # =========================
-# СПИСОК ТОКЕНОВ (ВЫРОВНЕН)
+# СПИСОК ТОКЕНОВ
 # =========================
 TOKENS = [
     "bitcoin",
@@ -36,11 +41,11 @@ COINGECKO_IDS = {
     "bitcoin": "bitcoin",
     "ethereum": "ethereum",
     "solana": "solana",
-    "near": "near",                # Near Protocol
-    "arbitrum": "arbitrum",        # Эталон для ARB
+    "near": "near",
+    "arbitrum": "arbitrum",
     "mina": "mina",
     "starknet": "starknet",
-    "zksync-era": "zksync-era"     # ВАЖНО: правильный ID
+    "zksync-era": "zksync-era"
 }
 
 # =========================
@@ -63,9 +68,9 @@ def send_telegram(message: str):
         print("❌ TELEGRAM EXCEPTION:", e, flush=True)
 
 # =========================
-# DEX SCREENER (ТОЛЬКО ЛИКВИДНОСТЬ + ОБЪЁМ)
+# DEX SCREENER (ЛИКВИДНОСТЬ + ОБЪЁМ)
 # =========================
-def get_dex_data(query: str):
+def get_dex_data(query: str, is_big_token: bool):
     try:
         url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
         r = requests.get(url, timeout=15)
@@ -74,21 +79,25 @@ def get_dex_data(query: str):
         if "pairs" not in data or len(data["pairs"]) == 0:
             return None
 
-        # Берём САМУЮ ЛИКВИДНУЮ пару
         pairs_sorted = sorted(
             data["pairs"],
             key=lambda x: x.get("liquidity", {}).get("usd", 0),
             reverse=True
         )
+
         pair = pairs_sorted[0]
 
         liquidity = pair.get("liquidity", {}).get("usd", 0)
         volume_24h = pair.get("volume", {}).get("h24", 0)
         dex = pair.get("dexId")
 
-        # ФИЛЬТР МУСОРА
-        if liquidity < MIN_LIQUIDITY_USD or volume_24h < MIN_VOLUME_24H_USD:
-            return None
+        # РАЗНЫЕ ФИЛЬТРЫ
+        if is_big_token:
+            if liquidity < BTC_ETH_MIN_LIQUIDITY or volume_24h < BTC_ETH_MIN_VOLUME:
+                return None
+        else:
+            if liquidity < ALT_MIN_LIQUIDITY or volume_24h < ALT_MIN_VOLUME:
+                return None
 
         return liquidity, volume_24h, dex
 
@@ -97,7 +106,7 @@ def get_dex_data(query: str):
         return None
 
 # =========================
-# COINGECKO (ЭТАЛОН ЦЕНЫ)
+# COINGECKO — ЭТАЛОН ЦЕНЫ
 # =========================
 def get_coingecko_price(coin_id: str):
     try:
@@ -121,17 +130,22 @@ def get_coingecko_price(coin_id: str):
 # ОСНОВНОЙ ЦИКЛ
 # =========================
 def run_bot():
-    print("=== BOT LOOP STARTED (STEP 3 — CLEAN DATA MODE) ===", flush=True)
+    print("=== BOT LOOP STARTED (STEP 3.1 — SMART MODE) ===", flush=True)
 
     while True:
         try:
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            report = "<b>🧹 ЧИСТЫЕ ДАННЫЕ (ШАГ 3)</b>\n"
-            report += "Цена = CoinGecko | Ликвидность/Объём = DEX\n\n"
+
+            report = "<b>🧠 УМНЫЕ ФИЛЬТРЫ (ШАГ 3.1)</b>\n"
+            report += "BTC/ETH — жёсткие фильтры\n"
+            report += "Альты — мягкие фильтры\n"
+            report += "Цена = CoinGecko | Объём/Ликвидность = DEX\n\n"
 
             for token in TOKENS:
+                is_big = token in ["bitcoin", "ethereum"]
+
                 cg_price = get_coingecko_price(COINGECKO_IDS[token])
-                dex_data = get_dex_data(token)
+                dex_data = get_dex_data(token, is_big)
 
                 if not cg_price or not dex_data:
                     report += f"<b>{token.upper()}</b>: недостаточно данных\n\n"
@@ -160,8 +174,8 @@ def run_bot():
 # =========================
 if __name__ == "__main__":
     try:
-        print("=== MAIN ENTERED (STEP 3) ===", flush=True)
-        send_telegram("✅ Бот перешёл в ШАГ 3. Включена очистка и выравнивание данных.")
+        print("=== MAIN ENTERED (STEP 3.1) ===", flush=True)
+        send_telegram("✅ Включены разные фильтры для BTC/ETH и альтов (ШАГ 3.1)")
         run_bot()
     except Exception as e:
         print("🔥 FATAL START ERROR:", e, flush=True)
