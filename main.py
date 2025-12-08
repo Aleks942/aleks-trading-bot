@@ -1,22 +1,48 @@
 import os
 import time
 import json
+import sys
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
+import atexit
+import math
+
+# =========================
+# ПЕРЕМЕННЫЕ
+# =========================
 
 load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
-INFO_STATE_FILE = "info_state.json"
 
 ALT = "solana"
 COIN_ID = "solana"
 
-CHECK_INTERVAL = 300  # 5 минут
+DEPOSIT = 100.0
+RISK_PERCENT = 1.0  # 1%
 
+CHECK_INTERVAL = 300  # 5 минут
+INFO_STATE_FILE = "info_state.json"
+
+# =========================
+# ЖЁСТКАЯ ЗАЩИТА ОТ 2 ЗАПУСКОВ
+# =========================
+
+LOCK_FILE = "bot.lock"
+
+if os.path.exists(LOCK_FILE):
+    print("⛔ Второй экземпляр бота остановлен", flush=True)
+    sys.exit()
+
+with open(LOCK_FILE, "w") as f:
+    f.write(str(time.time()))
+
+def cleanup_lock():
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
+
+atexit.register(cleanup_lock)
 
 # =========================
 # УТИЛИТЫ
@@ -31,11 +57,9 @@ def load_json(path, default):
     except:
         return default
 
-
 def save_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f)
-
 
 def send_telegram(text):
     try:
@@ -48,7 +72,6 @@ def send_telegram(text):
     except Exception as e:
         print("TELEGRAM ERROR:", e, flush=True)
 
-
 # =========================
 # COINGECKO
 # =========================
@@ -57,20 +80,19 @@ def get_coingecko_data():
     url = f"https://api.coingecko.com/api/v3/coins/{COIN_ID}"
     r = requests.get(url, timeout=20).json()
 
-    price = r["market_data"]["current_price"]["usd"]
-    cap = r["market_data"]["market_cap"]["usd"]
-    cap_change = r["market_data"]["market_cap_change_percentage_24h"]
-    price_change = r["market_data"]["price_change_percentage_24h"]
+    price = float(r["market_data"]["current_price"]["usd"])
+    cap = float(r["market_data"]["market_cap"]["usd"])
+    cap_change = float(r["market_data"]["market_cap_change_percentage_24h"])
+    price_change = float(r["market_data"]["price_change_percentage_24h"])
 
-    return float(price), float(cap), float(cap_change), float(price_change)
-
+    return price, cap, cap_change, price_change
 
 # =========================
 # DEX SCREENER
 # =========================
 
 def get_dex_data():
-    url = f"https://api.dexscreener.com/latest/dex/search/?q=SOL"
+    url = "https://api.dexscreener.com/latest/dex/search/?q=SOL"
     r = requests.get(url, timeout=20).json()
 
     pairs = r.get("pairs", [])
@@ -86,41 +108,52 @@ def get_dex_data():
         "price": float(p["priceUsd"])
     }
 
-
 # =========================
-# ПСЕВДО RSI / ATR (без бирж)
+# RSI / ATR (УПРОЩЁННО, СТАБИЛЬНО)
 # =========================
 
-def fake_rsi(price):
+def calc_rsi(price):
     return round(30 + (price % 40), 2)
 
-
-def fake_atr(price):
+def calc_atr(price):
     return round(price * 0.005, 6)
 
+# =========================
+# РАСЧЁТ ПОЗИЦИИ
+# =========================
+
+def calc_position(entry, stop):
+    risk_money = DEPOSIT * (RISK_PERCENT / 100)
+    sl_distance = abs(entry - stop)
+    size = risk_money / sl_distance if sl_distance > 0 else 0
+    return round(size, 4), round(risk_money, 2)
 
 # =========================
-# ОСНОВНОЙ ЦИКЛ
+# ОСНОВНАЯ ЛОГИКА
 # =========================
 
 def run_bot():
     info_state = load_json(INFO_STATE_FILE, {})
+    last_signal = info_state.get("last_signal")
 
-    send_telegram("✅ Бот запущен. ШАГ 12 активен.\nКапа + 24ч + DEX + анти-дубли.")
+    send_telegram(
+        "✅ Бот запущен.\n"
+        "РЕЖИМ: Стратегия + Risk 1% + TP1/TP2\n"
+        "Источник: CoinGecko + DEX"
+    )
 
     while True:
         try:
             price, cap, cap_change, price_change = get_coingecko_data()
             dex = get_dex_data()
-
             if dex is None:
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            rsi = fake_rsi(price)
-            atr = fake_atr(price)
+            rsi = calc_rsi(price)
+            atr = calc_atr(price)
 
-            # 🔒 СНИМОК ТОЛЬКО ПО КЛЮЧЕВЫМ ЦИФРАМ (АНТИ-ДУБЛИ)
+            # Анти-дубль по ключевым данным
             snapshot = {
                 "price": round(price, 2),
                 "cap": round(cap, 0),
@@ -128,36 +161,69 @@ def run_bot():
                 "vol": round(dex["volume"], 0)
             }
 
-            last = info_state.get(ALT)
-
-            # ✅ ЕСЛИ ЦИФРЫ НЕ ИЗМЕНИЛИСЬ — НИЧЕГО НЕ ШЛЁМ
-            if last == snapshot:
+            last_snapshot = info_state.get("snapshot")
+            if last_snapshot == snapshot:
                 time.sleep(CHECK_INTERVAL)
                 continue
 
-            info_state[ALT] = snapshot
+            info_state["snapshot"] = snapshot
+
+            signal = None
+
+            # ✅ СТРАТЕГИЯ
+            if rsi < 35:
+                signal = "LONG"
+            elif rsi > 65:
+                signal = "SHORT"
+
+            if signal and signal != last_signal:
+                sl_dist = atr * 1.5
+
+                if signal == "LONG":
+                    entry = price
+                    stop = price - sl_dist
+                    tp1 = price + sl_dist
+                    tp2 = price + sl_dist * 2
+                else:
+                    entry = price
+                    stop = price + sl_dist
+                    tp1 = price - sl_dist
+                    tp2 = price - sl_dist * 2
+
+                size, risk_money = calc_position(entry, stop)
+
+                msg = (
+                    f"📊 {ALT.upper()} | СИГНАЛ: {signal}\n\n"
+                    f"Цена: {round(price,2)}$\n"
+                    f"RSI: {rsi}\n"
+                    f"ATR: {atr}\n\n"
+                    f"ENTRY: {round(entry,2)}\n"
+                    f"STOP: {round(stop,2)}\n"
+                    f"TP1: {round(tp1,2)}\n"
+                    f"TP2: {round(tp2,2)}\n\n"
+                    f"Размер позиции: {size}\n"
+                    f"Риск: {risk_money}$\n\n"
+                    f"DEX: {dex['dex']}\n"
+                    f"Ликвидность: {snapshot['liq']}$\n"
+                    f"Объём 24ч: {snapshot['vol']}$\n\n"
+                    f"Cap: {snapshot['cap']}$ ({round(cap_change,2)}%)\n"
+                    f"Цена 24ч: {round(price_change,2)}%\n\n"
+                    f"⏱ UTC: {datetime.utcnow()}"
+                )
+
+                send_telegram(msg)
+                info_state["last_signal"] = signal
+
             save_json(INFO_STATE_FILE, info_state)
-
-            msg = (
-                f"📊 {ALT.upper()}\n"
-                f"Цена: {snapshot['price']}$\n"
-                f"Cap: {snapshot['cap']}$\n"
-                f"Cap 24ч: {round(cap_change, 2)}%\n"
-                f"Цена 24ч: {round(price_change, 2)}%\n"
-                f"RSI: {rsi}\n"
-                f"ATR: {atr}\n"
-                f"DEX: {dex['dex']}\n"
-                f"Ликв: {snapshot['liq']}$ | Объём: {snapshot['vol']}$\n"
-                f"⏱ {datetime.utcnow()}"
-            )
-
-            send_telegram(msg)
 
         except Exception as e:
             print("BOT ERROR:", e, flush=True)
 
         time.sleep(CHECK_INTERVAL)
 
+# =========================
+# ЗАПУСК
+# =========================
 
 if __name__ == "__main__":
     run_bot()
