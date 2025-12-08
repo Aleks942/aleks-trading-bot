@@ -214,7 +214,8 @@ def run_bot():
                 market = get_market_data(alt)
                 dex = dex_data(alt)
 
-                if not df or not market or not dex:
+            if df is None or df.empty or market is None or dex is None:
+
                     continue
 
                 price, cap, cap_change, price_change = market
