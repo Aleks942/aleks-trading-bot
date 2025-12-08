@@ -246,4 +246,14 @@ def run_bot():
 # =========================
 
 if __name__ == "__main__":
-    run_bot()
+    print("=== BEFORE RUN_BOT ===", flush=True)
+
+    try:
+        run_bot()
+    except Exception as e:
+        print("❌ FATAL ERROR IN run_bot:", e, flush=True)
+
+        # ЖЕСТКО ДЕРЖИМ ПРОЦЕСС ЖИВЫМ,
+        # ЧТОБЫ RAILWAY НЕ ПЕРЕЗАПУСКАЛ КОНТЕЙНЕР
+        while True:
+            time.sleep(60)
