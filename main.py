@@ -1,4 +1,4 @@
-# === ШАГ 11 — ЕЖЕДНЕВНЫЙ ОТЧЁТ В 22:00 (ПОЛЬША, UTC+1) ===
+# === ШАГ 11 — ЕЖЕДНЕВНЫЙ ОТЧЁТ В 20:30 (ПОЛЬША, UTC+1) ===
 
 import os
 import time
@@ -8,7 +8,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-print("=== BOT BOOT STARTED (STEP 11 — DAILY REPORT 22:00) ===", flush=True)
+print("=== BOT BOOT STARTED (STEP 11 — DAILY REPORT 20:30) ===", flush=True)
 
 load_dotenv()
 
@@ -21,8 +21,9 @@ POSITIONS_FILE = "open_positions.json"
 TRADES_LOG_FILE = "trades_log.json"
 DAILY_REPORT_FILE = "daily_report_state.json"
 
-# ===== РЕЖИМ ОТЧЁТА =====
-REPORT_HOUR = 22  # 22:00 Польша (UTC+1)
+# ===== ВРЕМЯ ОТЧЁТА =====
+REPORT_HOUR = 20
+REPORT_MINUTE = 30   # 20:30 Польша (UTC+1)
 
 # ===== РИСК =====
 START_DEPOSIT = 100.0
@@ -78,8 +79,7 @@ def get_ohlc(coin_id):
         prices = data.get("prices", [])
         if len(prices) < 60:
             return None
-        df = pd.DataFrame({"close": [x[1] for x in prices]})
-        return df
+        return pd.DataFrame({"close": [x[1] for x in prices]})
     except:
         return None
 
@@ -107,15 +107,18 @@ def dex_data(query):
     try:
         url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
         data = requests.get(url, timeout=15).json()
-        p = data.get("pairs", [])
-        if not p:
+        pairs = data.get("pairs", [])
+        if not pairs:
             return None
-        p = sorted(p, key=lambda x: x.get("liquidity", {}).get("usd", 0), reverse=True)[0]
-        liq = p.get("liquidity", {}).get("usd", 0)
-        vol = p.get("volume", {}).get("h24", 0)
-        dex = p.get("dexId")
+
+        pair = sorted(pairs, key=lambda x: x.get("liquidity", {}).get("usd", 0), reverse=True)[0]
+        liq = pair.get("liquidity", {}).get("usd", 0)
+        vol = pair.get("volume", {}).get("h24", 0)
+        dex = pair.get("dexId")
+
         if liq < ALT_MIN_LIQUIDITY or vol < ALT_MIN_VOLUME:
             return None
+
         return liq, vol, dex
     except:
         return None
@@ -132,7 +135,7 @@ def all_stats():
     wins = len([t for t in log if t["pnl"] > 0])
     return len(log), wins, total
 
-# ===== ОТКРЫТИЕ / ЗАКРЫТИЕ =====
+# ===== СДЕЛКИ =====
 def open_position(alt, side, price, atr_v, dex):
     st = price - atr_v if side == "LONG" else price + atr_v
     tp1 = price + atr_v if side == "LONG" else price - atr_v
@@ -171,6 +174,7 @@ def close_trade(pos, price):
         "size": pos["size"],
         "pnl": round(pnl, 2)
     }
+
     log_trade(trade)
 
     send_telegram(
@@ -191,6 +195,7 @@ def update_trailing(pos, price):
         if price <= pos["stop"]:
             pos["active"] = False
             close_trade(pos, price)
+
     else:
         if not pos["tp1_done"] and price <= pos["tp1"]:
             pos["tp1_done"] = True
@@ -203,7 +208,7 @@ def update_trailing(pos, price):
 
     return pos
 
-# ===== ЕЖЕДНЕВНЫЙ ОТЧЁТ =====
+# ===== ДНЕВНОЙ ОТЧЁТ =====
 def send_daily_report():
     log = load_json(TRADES_LOG_FILE, [])
     today = datetime.utcnow().date()
@@ -242,7 +247,8 @@ def run_bot():
 
     while True:
         try:
-            now = datetime.utcnow() + timedelta(hours=1)  # Польша = UTC+1
+            now = datetime.utcnow() + timedelta(hours=1)  # Польша UTC+1
+            today_str = now.date().isoformat()
 
             # --- ТРЕЙЛИНГ
             for alt, pos in list(positions.items()):
@@ -257,6 +263,7 @@ def run_bot():
                     positions.pop(alt)
                 else:
                     positions[alt] = pos
+
             save_json(POSITIONS_FILE, positions)
 
             # --- ПОИСК СИГНАЛОВ
@@ -288,9 +295,12 @@ def run_bot():
                     positions[alt] = pos
                     save_json(POSITIONS_FILE, positions)
 
-            # --- ЕЖЕДНЕВНЫЙ ОТЧЁТ В 22:00
-            today_str = now.date().isoformat()
-            if now.hour == REPORT_HOUR and report_state.get("last_date") != today_str:
+            # --- ДНЕВНОЙ ОТЧЁТ В 20:30
+            if (
+                now.hour == REPORT_HOUR
+                and now.minute >= REPORT_MINUTE
+                and report_state.get("last_date") != today_str
+            ):
                 send_daily_report()
                 report_state["last_date"] = today_str
                 save_json(DAILY_REPORT_FILE, report_state)
@@ -301,5 +311,5 @@ def run_bot():
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    send_telegram("✅ ШАГ 11 активирован. Дневной отчёт каждый день в 22:00.")
+    send_telegram("✅ ШАГ 11 активирован. Дневной отчёт каждый день в 20:30.")
     run_bot()
