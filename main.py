@@ -11,10 +11,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = 300  # 5 минут
+CHECK_INTERVAL = 300
 
 REPORT_HOUR = 20
-REPORT_MINUTE = 30  # 20:30 UTC+2
+REPORT_MINUTE = 30
 
 START_DEPOSIT = 100.0
 RISK_PERCENT = 1.0
@@ -32,7 +32,8 @@ STATE_FILE = "state.json"
 TRADES_FILE = "trades.json"
 REPORT_FILE = "report_state.json"
 
-# ---------- УТИЛИТЫ ----------
+
+# --------- UTIL ---------
 def load_json(path, default):
     if not os.path.exists(path):
         return default
@@ -42,9 +43,11 @@ def load_json(path, default):
     except:
         return default
 
+
 def save_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
+
 
 def send_telegram(text):
     try:
@@ -53,7 +56,8 @@ def send_telegram(text):
     except:
         pass
 
-# ---------- COINGECKO ----------
+
+# --------- COINGECKO ---------
 def get_market_data(coin_id):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
@@ -68,6 +72,7 @@ def get_market_data(coin_id):
     except:
         return None
 
+
 def get_ohlc(coin_id):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
@@ -75,25 +80,33 @@ def get_ohlc(coin_id):
         prices = r.get("prices", [])
         if len(prices) < 50:
             return None
-        return pd.DataFrame({"close": [x[1] for x in prices]})
+        return pd.DataFrame({"close": [float(x[1]) for x in prices]})
     except:
         return None
 
-# ---------- ИНДИКАТОРЫ ----------
+
+# --------- INDICATORS (ИСПРАВЛЕНО) ---------
 def rsi(df):
     delta = df["close"].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
     avg_gain = gain.rolling(RSI_PERIOD).mean()
     avg_loss = loss.rolling(RSI_PERIOD).mean()
+
     rs = avg_gain / avg_loss
-    return round(float(100 - (100 / (1 + rs))).iloc[-1], 2)
+    rsi_series = 100 - (100 / (1 + rs))
+
+    return round(float(rsi_series.dropna().iloc[-1]), 2)
+
 
 def atr(df):
     tr = df["close"].diff().abs()
-    return round(float(tr.rolling(ATR_PERIOD).mean().iloc[-1]), 6)
+    atr_series = tr.rolling(ATR_PERIOD).mean()
+    return round(float(atr_series.dropna().iloc[-1]), 6)
 
-# ---------- DEX ----------
+
+# --------- DEX ---------
 def dex_data(query):
     try:
         url = f"https://api.dexscreener.com/latest/dex/search/?q={query}"
@@ -115,17 +128,18 @@ def dex_data(query):
     except:
         return None
 
-# ---------- ЛИКВИДАЦИИ ----------
+
+# --------- LIQUIDATIONS ---------
 def get_liquidations(symbol="BTC"):
     try:
         url = f"https://fapi.coinglass.com/api/futures/liquidation_snapshot?symbol={symbol}"
         r = requests.get(url, timeout=20).json()["data"]
-
         return float(r["longVolUsd"]), float(r["shortVolUsd"])
     except:
         return None, None
 
-# ---------- ДНЕВНОЙ ОТЧЁТ ----------
+
+# --------- DAILY REPORT ---------
 def send_daily_report():
     trades = load_json(TRADES_FILE, [])
     today = datetime.utcnow().date()
@@ -149,7 +163,8 @@ def send_daily_report():
 
     send_telegram(msg)
 
-# ---------- ОСНОВНОЙ ЦИКЛ ----------
+
+# --------- MAIN LOOP ---------
 def run_bot():
     send_telegram("✅ ШАГ 12 активирован. Капитализация + ликвидации + отчёт 20:30.")
 
@@ -159,16 +174,14 @@ def run_bot():
         try:
             now = datetime.utcnow() + timedelta(hours=2)
 
-            # Ликвидации BTC
             long_liq, short_liq = get_liquidations()
-            if long_liq and short_liq:
+            if long_liq is not None and short_liq is not None:
                 send_telegram(
                     f"💥 ЛИКВИДАЦИИ BTC\n"
                     f"LONG: {round(long_liq,2)}$\n"
                     f"SHORT: {round(short_liq,2)}$"
                 )
 
-            # Альты + капа
             for alt in ALT_TOKENS:
                 df = get_ohlc(alt)
                 market = get_market_data(alt)
@@ -199,7 +212,6 @@ def run_bot():
                     f"Ликв: {round(liq,0)}$ | Объём: {round(vol,0)}$"
                 )
 
-            # Дневной отчёт в 20:30
             today_str = now.date().isoformat()
             if (
                 now.hour == REPORT_HOUR
@@ -214,6 +226,7 @@ def run_bot():
             send_telegram(f"❌ BOT ERROR: {e}")
 
         time.sleep(CHECK_INTERVAL)
+
 
 if __name__ == "__main__":
     run_bot()
