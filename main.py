@@ -19,7 +19,7 @@ CHECK_INTERVAL = 300  # 5 минут
 
 
 # =========================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# УТИЛИТЫ
 # =========================
 
 def load_json(path, default):
@@ -88,7 +88,7 @@ def get_dex_data():
 
 
 # =========================
-# RSI / ATR (упрощённо)
+# ПСЕВДО RSI / ATR (без бирж)
 # =========================
 
 def fake_rsi(price):
@@ -113,41 +113,45 @@ def run_bot():
             price, cap, cap_change, price_change = get_coingecko_data()
             dex = get_dex_data()
 
-            if not dex:
+            if dex is None:
                 time.sleep(CHECK_INTERVAL)
                 continue
 
             rsi = fake_rsi(price)
             atr = fake_atr(price)
 
+            # 🔒 СНИМОК ТОЛЬКО ПО КЛЮЧЕВЫМ ЦИФРАМ (АНТИ-ДУБЛИ)
             snapshot = {
                 "price": round(price, 2),
                 "cap": round(cap, 0),
-                "cap_change": round(cap_change, 2),
-                "price_change": round(price_change, 2),
-                "rsi": rsi,
                 "liq": round(dex["liquidity"], 0),
                 "vol": round(dex["volume"], 0)
             }
 
-            if info_state.get(ALT) != snapshot:
-                info_state[ALT] = snapshot
-                save_json(INFO_STATE_FILE, info_state)
+            last = info_state.get(ALT)
 
-                msg = (
-                    f"📊 {ALT.upper()}\n"
-                    f"Цена: {snapshot['price']}$\n"
-                    f"Cap: {snapshot['cap']}$\n"
-                    f"Cap 24ч: {snapshot['cap_change']}%\n"
-                    f"Цена 24ч: {snapshot['price_change']}%\n"
-                    f"RSI: {snapshot['rsi']}\n"
-                    f"ATR: {atr}\n"
-                    f"DEX: {dex['dex']}\n"
-                    f"Ликв: {snapshot['liq']}$ | Объём: {snapshot['vol']}$\n"
-                    f"⏱ {datetime.utcnow()}"
-                )
+            # ✅ ЕСЛИ ЦИФРЫ НЕ ИЗМЕНИЛИСЬ — НИЧЕГО НЕ ШЛЁМ
+            if last == snapshot:
+                time.sleep(CHECK_INTERVAL)
+                continue
 
-                send_telegram(msg)
+            info_state[ALT] = snapshot
+            save_json(INFO_STATE_FILE, info_state)
+
+            msg = (
+                f"📊 {ALT.upper()}\n"
+                f"Цена: {snapshot['price']}$\n"
+                f"Cap: {snapshot['cap']}$\n"
+                f"Cap 24ч: {round(cap_change, 2)}%\n"
+                f"Цена 24ч: {round(price_change, 2)}%\n"
+                f"RSI: {rsi}\n"
+                f"ATR: {atr}\n"
+                f"DEX: {dex['dex']}\n"
+                f"Ликв: {snapshot['liq']}$ | Объём: {snapshot['vol']}$\n"
+                f"⏱ {datetime.utcnow()}"
+            )
+
+            send_telegram(msg)
 
         except Exception as e:
             print("BOT ERROR:", e, flush=True)
