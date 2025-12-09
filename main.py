@@ -10,155 +10,148 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-SYMBOLS = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "SOL": "SOLUSDT"
-}
-
-RISK_PERCENT = 1.0
+CHECK_INTERVAL = 60
+RISK_PERCENT = 1
+DEPOSIT = 100
 RSI_LOW = 35
 RSI_HIGH = 65
-CHECK_INTERVAL = 60
+ATR_MULT = 1
 
-last_signals = {}
+SYMBOLS = {
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
+    "solana": "SOL"
+}
+
+DEX_SYMBOLS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana"
+}
+
+LAST_SIGNAL_FILE = "last_signal.txt"
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+    payload = {"chat_id": CHAT_ID, "text": text}
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except:
+        pass
+
+def load_last():
+    if not os.path.exists(LAST_SIGNAL_FILE):
+        return ""
+    with open(LAST_SIGNAL_FILE, "r") as f:
+        return f.read()
+
+def save_last(sig):
+    with open(LAST_SIGNAL_FILE, "w") as f:
+        f.write(sig)
+
+def get_market_data():
+    ids = ",".join(SYMBOLS.keys())
+    url = f"https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "ids": ids,
+        "price_change_percentage": "24h"
+    }
+    r = requests.get(url, params=params, timeout=10).json()
+    return r
+
+def get_dex(symbol):
+    url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
+    r = requests.get(url, timeout=10).json()
+    if "pairs" not in r or not r["pairs"]:
+        return None, None, None
+    p = r["pairs"][0]
+    return p.get("dexId"), float(p.get("liquidity", {}).get("usd", 0)), float(p.get("volume", {}).get("h24", 0))
 
 def get_ohlc(symbol):
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": "5m", "limit": 100}
-    data = requests.get(url, params=params).json()
-    df = pd.DataFrame(data, columns=["t","o","h","l","c","v","x","q","n","tb","tq","i"])
-    df = df[["o","h","l","c"]].astype(float)
+    url = f"https://api.coingecko.com/api/v3/coins/{symbol}/ohlc"
+    r = requests.get(url, params={"vs_currency": "usd", "days": 1}, timeout=10).json()
+    df = pd.DataFrame(r, columns=["time", "open", "high", "low", "close"])
     return df
 
-def rsi(series, period=14):
-    delta = series.diff()
+def calculate_rsi(df, period=14):
+    delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return float(rsi.iloc[-1])
 
-def atr(df, period=14):
-    high = df["h"]
-    low = df["l"]
-    close = df["c"]
-    ranges = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
-    ], axis=1)
-    tr = ranges.max(axis=1)
-    return tr.rolling(period).mean()
+def calculate_atr(df, period=14):
+    df["tr"] = df["high"] - df["low"]
+    atr = df["tr"].rolling(period).mean()
+    return float(atr.iloc[-1])
 
-def ema(series, period=50):
-    return series.ewm(span=period, adjust=False).mean()
+def calc_position(atr):
+    risk = DEPOSIT * RISK_PERCENT / 100
+    size = risk / atr
+    return round(size, 5)
 
-def coingecko(symbol):
-    ids = {"BTC":"bitcoin","ETH":"ethereum","SOL":"solana"}
-    url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {
-        "ids": ids[symbol],
-        "vs_currencies": "usd",
-        "include_market_cap": "true",
-        "include_24hr_change": "true"
-    }
-    data = requests.get(url, params=params).json()[ids[symbol]]
-    return data["usd"], data["usd_market_cap"], data["usd_24h_change"]
+send_telegram("Bot started. Strategy: RSI 35/65 + Risk 1% + TP1/TP2")
 
-def calc_position(balance, risk_pct, entry, stop):
-    risk = balance * risk_pct / 100
-    size = risk / abs(entry - stop)
-    return round(size, 6), round(risk, 2)
+while True:
+    try:
+        market = get_market_data()
+        last = load_last()
 
-def check_duplicate(symbol, side, price):
-    prev = last_signals.get(symbol)
-    if not prev:
-        return False
-    old_side, old_price = prev
-    if old_side == side:
-        if abs(price - old_price) / old_price < 0.004:
-            return True
-    return False
+        for item in market:
+            name = item["id"]
+            symbol = SYMBOLS[name]
+            price = float(item["current_price"])
+            cap = float(item["market_cap"])
+            cap_ch = float(item.get("market_cap_change_percentage_24h", 0))
 
-def run():
-    send_telegram("Bot started. Strategy: RSI 35/65 + EMA50 + Risk 1% + TP1/TP2")
+            df = get_ohlc(name)
+            rsi = calculate_rsi(df)
+            atr = calculate_atr(df)
 
-    while True:
-        try:
-            for name, sym in SYMBOLS.items():
-                df = get_ohlc(sym)
-                close = df["c"]
-                last_price = close.iloc[-1]
+            dex, liq, vol = get_dex(symbol)
 
-                rsi_val = rsi(close).iloc[-1]
-                atr_val = atr(df).iloc[-1]
-                ema50 = ema(close).iloc[-1]
+            signal = None
+            if rsi >= RSI_HIGH:
+                signal = "SHORT"
+            elif rsi <= RSI_LOW:
+                signal = "LONG"
 
-                price_cg, cap, cap_change = coingecko(name)
+            if signal:
+                uid = f"{symbol}_{signal}"
+                if uid != last:
+                    stop = price + atr if signal == "SHORT" else price - atr
+                    tp1 = price - atr if signal == "SHORT" else price + atr
+                    tp2 = price - atr * 2 if signal == "SHORT" else price + atr * 2
+                    size = calc_position(atr)
 
-                signal = None
+                    msg = (
+                        f"SIGNAL: {signal} | {symbol}\n\n"
+                        f"Price: {round(price,5)}\n"
+                        f"RSI: {round(rsi,2)}\n"
+                        f"ATR: {round(atr,5)}\n\n"
+                        f"Entry: {round(price,5)}\n"
+                        f"STOP: {round(stop,5)}\n"
+                        f"TP1: {round(tp1,5)}\n"
+                        f"TP2: {round(tp2,5)}\n\n"
+                        f"Deposit: {DEPOSIT}$\n"
+                        f"Risk: {RISK_PERCENT}%\n"
+                        f"Position size: {round(size,5)}\n\n"
+                        f"Cap: {int(cap)}$\n"
+                        f"Cap 24h: {round(cap_ch,2)}%\n"
+                        f"DEX: {dex}\n"
+                        f"Liquidity: {liq}$\n"
+                        f"Volume 24h: {vol}$\n"
+                        f"Time UTC: {datetime.utcnow()}"
+                    )
 
-                if rsi_val < RSI_LOW and last_price > ema50:
-                    signal = "LONG"
-                elif rsi_val > RSI_HIGH and last_price < ema50:
-                    signal = "SHORT"
+                    send_telegram(msg)
+                    save_last(uid)
 
-                if not signal:
-                    continue
+    except Exception as e:
+        send_telegram(f"BOT ERROR: {e}")
 
-                if check_duplicate(name, signal, last_price):
-                    continue
-
-                if signal == "LONG":
-                    entry = last_price
-                    stop = entry - atr_val
-                    tp1 = entry + atr_val
-                    tp2 = entry + atr_val * 2
-                else:
-                    entry = last_price
-                    stop = entry + atr_val
-                    tp1 = entry - atr_val
-                    tp2 = entry - atr_val * 2
-
-                size, risk = calc_position(100, RISK_PERCENT, entry, stop)
-
-                text = f"""
-SIGNAL: {signal} | {name}
-
-Price: {round(last_price,2)}
-RSI: {round(rsi_val,2)}
-ATR: {round(atr_val,2)}
-EMA50: {round(ema50,2)}
-
-Entry: {round(entry,2)}
-STOP: {round(stop,2)}
-TP1: {round(tp1,2)}
-TP2: {round(tp2,2)}
-
-Deposit: 100.0$
-Risk: {risk}$
-Position size: {size}
-
-Cap: {round(cap,0)}
-Cap 24h: {round(cap_change,2)}%
-
-Time UTC: {datetime.utcnow()}
-"""
-                send_telegram(text)
-                last_signals[name] = (signal, last_price)
-
-            time.sleep(CHECK_INTERVAL)
-
-        except Exception as e:
-            send_telegram(f"BOT ERROR: {e}")
-            time.sleep(30)
-
-if __name__ == "__main__":
-    run()
-
+    time.sleep(CHECK_INTERVAL)
