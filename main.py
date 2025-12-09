@@ -11,156 +11,154 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 SYMBOLS = {
-    "bitcoin": "BTC",
-    "ethereum": "ETH",
-    "solana": "SOL"
+    "BTC": "BTCUSDT",
+    "ETH": "ETHUSDT",
+    "SOL": "SOLUSDT"
 }
 
-TIMEFRAME_MINUTES = 5
-CANDLES_LIMIT = 100
+RISK_PERCENT = 1.0
+RSI_LOW = 35
+RSI_HIGH = 65
 CHECK_INTERVAL = 60
 
-DEPOSIT = 100.0
-RISK_PERCENT = 1.0
+last_signals = {}
 
-RSI_LONG = 35
-RSI_SHORT = 65
-
-LAST_SIGNAL_FILE = "last_signal.txt"
-
-
-# ---------- TELEGRAM ----------
 def send_telegram(text):
-    if not BOT_TOKEN or not CHAT_ID:
-        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": text})
 
+def get_ohlc(symbol):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": "5m", "limit": 100}
+    data = requests.get(url, params=params).json()
+    df = pd.DataFrame(data, columns=["t","o","h","l","c","v","x","q","n","tb","tq","i"])
+    df = df[["o","h","l","c"]].astype(float)
+    return df
 
-# ---------- COINGECKO OHLC ----------
-def get_ohlc(coin_id):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {"vs_currency": "usd", "days": 1}
-    r = requests.get(url, params=params, timeout=20)
-    data = r.json()
-
-    if not isinstance(data, list) or len(data) == 0:
-        return None
-
-    df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close"])
-    return df.tail(CANDLES_LIMIT).reset_index(drop=True)
-
-
-# ---------- INDICATORS ----------
-def calculate_rsi(series, period=14):
+def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
     rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-    return float((100 - (100 / (1 + rs))).iloc[-1])
+def atr(df, period=14):
+    high = df["h"]
+    low = df["l"]
+    close = df["c"]
+    ranges = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1)
+    tr = ranges.max(axis=1)
+    return tr.rolling(period).mean()
 
+def ema(series, period=50):
+    return series.ewm(span=period, adjust=False).mean()
 
-def calculate_atr(df, period=14):
-    high_low = df["high"] - df["low"]
-    high_close = (df["high"] - df["close"].shift()).abs()
-    low_close = (df["low"] - df["close"].shift()).abs()
+def coingecko(symbol):
+    ids = {"BTC":"bitcoin","ETH":"ethereum","SOL":"solana"}
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {
+        "ids": ids[symbol],
+        "vs_currencies": "usd",
+        "include_market_cap": "true",
+        "include_24hr_change": "true"
+    }
+    data = requests.get(url, params=params).json()[ids[symbol]]
+    return data["usd"], data["usd_market_cap"], data["usd_24h_change"]
 
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
+def calc_position(balance, risk_pct, entry, stop):
+    risk = balance * risk_pct / 100
+    size = risk / abs(entry - stop)
+    return round(size, 6), round(risk, 2)
 
-    return float(true_range.rolling(period).mean().iloc[-1])
+def check_duplicate(symbol, side, price):
+    prev = last_signals.get(symbol)
+    if not prev:
+        return False
+    old_side, old_price = prev
+    if old_side == side:
+        if abs(price - old_price) / old_price < 0.004:
+            return True
+    return False
 
-
-# ---------- RISK ----------
-def calc_trade(price, atr):
-    risk_usd = DEPOSIT * (RISK_PERCENT / 100)
-    position_size = risk_usd / atr
-    stop_long = price - atr
-    stop_short = price + atr
-    tp1 = price + atr
-    tp2 = price + atr * 2
-
-    return risk_usd, position_size, stop_long, stop_short, tp1, tp2
-
-
-# ---------- ANTI-DUPLICATE ----------
-def load_last_signal():
-    if not os.path.exists(LAST_SIGNAL_FILE):
-        return None
-    return open(LAST_SIGNAL_FILE).read().strip()
-
-
-def save_last_signal(sig):
-    open(LAST_SIGNAL_FILE, "w").write(sig)
-
-
-# ---------- MAIN LOOP ----------
 def run():
-    send_telegram("Bot started. Strategy active: RSI 35/65, Risk 1%, TP1/TP2")
+    send_telegram("Bot started. Strategy: RSI 35/65 + EMA50 + Risk 1% + TP1/TP2")
 
     while True:
         try:
-            for coin_id, name in SYMBOLS.items():
-                df = get_ohlc(coin_id)
-                if df is None or len(df) < 30:
-                    continue
+            for name, sym in SYMBOLS.items():
+                df = get_ohlc(sym)
+                close = df["c"]
+                last_price = close.iloc[-1]
 
-                price = float(df["close"].iloc[-1])
-                rsi = calculate_rsi(df["close"])
-                atr = calculate_atr(df)
+                rsi_val = rsi(close).iloc[-1]
+                atr_val = atr(df).iloc[-1]
+                ema50 = ema(close).iloc[-1]
+
+                price_cg, cap, cap_change = coingecko(name)
 
                 signal = None
-                if rsi < RSI_LONG:
+
+                if rsi_val < RSI_LOW and last_price > ema50:
                     signal = "LONG"
-                elif rsi > RSI_SHORT:
+                elif rsi_val > RSI_HIGH and last_price < ema50:
                     signal = "SHORT"
 
                 if not signal:
                     continue
 
-                risk_usd, size, stop_long, stop_short, tp1, tp2 = calc_trade(price, atr)
-
-                last = load_last_signal()
-                sig_key = f"{name}-{signal}"
-
-                if last == sig_key:
+                if check_duplicate(name, signal, last_price):
                     continue
 
                 if signal == "LONG":
-                    stop = stop_long
+                    entry = last_price
+                    stop = entry - atr_val
+                    tp1 = entry + atr_val
+                    tp2 = entry + atr_val * 2
                 else:
-                    stop = stop_short
+                    entry = last_price
+                    stop = entry + atr_val
+                    tp1 = entry - atr_val
+                    tp2 = entry - atr_val * 2
 
-                msg = (
-                    f"SIGNAL: {signal} | {name}\n\n"
-                    f"Price: {round(price, 2)}\n"
-                    f"RSI: {round(rsi, 2)}\n"
-                    f"ATR: {round(atr, 4)}\n\n"
-                    f"Entry: {round(price, 2)}\n"
-                    f"STOP: {round(stop, 2)}\n"
-                    f"TP1: {round(tp1, 2)}\n"
-                    f"TP2: {round(tp2, 2)}\n\n"
-                    f"Deposit: {DEPOSIT}$\n"
-                    f"Risk: {risk_usd}$\n"
-                    f"Position size: {round(size, 5)}\n\n"
-                    f"Time UTC: {datetime.utcnow()}"
-                )
+                size, risk = calc_position(100, RISK_PERCENT, entry, stop)
 
-                send_telegram(msg)
-                save_last_signal(sig_key)
+                text = f"""
+SIGNAL: {signal} | {name}
+
+Price: {round(last_price,2)}
+RSI: {round(rsi_val,2)}
+ATR: {round(atr_val,2)}
+EMA50: {round(ema50,2)}
+
+Entry: {round(entry,2)}
+STOP: {round(stop,2)}
+TP1: {round(tp1,2)}
+TP2: {round(tp2,2)}
+
+Deposit: 100.0$
+Risk: {risk}$
+Position size: {size}
+
+Cap: {round(cap,0)}
+Cap 24h: {round(cap_change,2)}%
+
+Time UTC: {datetime.utcnow()}
+"""
+                send_telegram(text)
+                last_signals[name] = (signal, last_price)
+
+            time.sleep(CHECK_INTERVAL)
 
         except Exception as e:
             send_telegram(f"BOT ERROR: {e}")
+            time.sleep(30)
 
-        time.sleep(CHECK_INTERVAL)
-
-
-# ---------- START ----------
 if __name__ == "__main__":
-    print("BOOT OK: Strategy module started")
     run()
 
