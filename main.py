@@ -2,8 +2,6 @@ import requests
 import time
 import pandas as pd
 from datetime import datetime
-import matplotlib.pyplot as plt
-import io
 import threading
 
 # ============================================================
@@ -13,7 +11,7 @@ import threading
 BOT_TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "YOUR_CHAT_ID"
 
-INTERVAL = 3600  # TF = 1H
+INTERVAL = 3600  # 1h timeframe
 RISK_PERCENT = 1
 DEPOSIT = 100
 
@@ -47,13 +45,8 @@ def send(msg, parse="HTML"):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": parse})
 
-def send_photo(img_bytes):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    files = {"photo": img_bytes}
-    requests.post(url, data={"chat_id": CHAT_ID}, files=files)
-
 # ============================================================
-# DATA SOURCES
+# DATA
 # ============================================================
 
 def get_ohlc(symbol):
@@ -112,31 +105,6 @@ def calc_position(entry, stop):
     return round(risk / dist, 5) if dist > 0 else 0
 
 # ============================================================
-# CHART
-# ============================================================
-
-def make_chart(df, symbol):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-
-    ax1.plot(df["close"], label="Close")
-    ax1.plot(df["ema20"], label="EMA20")
-    ax1.plot(df["ema50"], label="EMA50")
-    ax1.set_title(symbol)
-    ax1.legend()
-
-    ax2.plot(df["rsi"], label="RSI", color="purple")
-    ax2.axhline(35, linestyle="--", color="green")
-    ax2.axhline(65, linestyle="--", color="red")
-    ax2.legend()
-
-    img = io.BytesIO()
-    plt.tight_layout()
-    plt.savefig(img, format="png")
-    img.seek(0)
-    plt.close()
-    return img
-
-# ============================================================
 # BOT LOOP
 # ============================================================
 
@@ -171,7 +139,6 @@ def bot_loop():
 
                 fake = (
                     price_ch > FAKE_PUMP_LIMIT or
-                    vol > (vol / 24) * FAKE_VOLUME_FACTOR or
                     abs(price - price_prev) > atr_val * 3
                 )
 
@@ -229,14 +196,11 @@ UTC: {datetime.utcnow()}
 """
                 send(msg)
 
-                img = make_chart(df, symbol)
-                send_photo(img)
-
             time.sleep(INTERVAL)
 
         except Exception as e:
             send(f"❌ ERROR: {str(e)}")
             time.sleep(30)
 
-# START BOT
+
 threading.Thread(target=bot_loop).start()
