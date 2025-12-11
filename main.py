@@ -6,9 +6,9 @@ from datetime import datetime
 BOT_TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "YOUR_CHAT_ID"
 
-INTERVAL = 900     # 15 минут
-DEPOSIT = 100
+INTERVAL = 3600  # 1 час
 RISK_PERCENT = 1
+DEPOSIT = 100
 
 RSI_LOW = 35
 RSI_HIGH = 65
@@ -16,190 +16,207 @@ RSI_HIGH = 65
 LAST_SIGNAL = {}
 
 SYMBOLS = {
-    "bitcoin":    {"ticker": "BTC",  "query": "btc"},
-    "ethereum":   {"ticker": "ETH",  "query": "eth"},
-    "solana":     {"ticker": "SOL",  "query": "sol"},
-    "arbitrum":   {"ticker": "ARB",  "query": "arb"},
-    "optimism":   {"ticker": "OP",   "query": "op"},
-    "polygon":    {"ticker": "MATIC","query": "matic"},
-    "immutable-x":{"ticker": "IMX",  "query": "imx"},
-    "starknet":   {"ticker": "STRK", "query": "strk"},
-    "zksync":     {"ticker": "ZK",   "query": "zk"}
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
+    "solana": "SOL",
+    "arbitrum": "ARB",
+    "optimism": "OP",
+    "polygon": "MATIC",
+    "immutable-x": "IMX",
+    "starknet": "STRK",
+    "metis-token": "METIS",
+    "loopring": "LRC"
 }
 
+
+# =====================================================================
+#  Telegram Sender
+# =====================================================================
 def send(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
     except:
         pass
 
 
-# ---------- OHLC DEX ----------
-def get_ohlc_from_dex(symbol, tf="1h"):
-    url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
-    data = requests.get(url).json()
-
-    if not data or "pairs" not in data or not data["pairs"]:
-        return None, None, None
-
-    pair = data["pairs"][0]
-
+# =====================================================================
+#   OHLC from CoinGecko
+# =====================================================================
+def get_ohlc(symbol):
     try:
-        liq = float(pair["liquidity"]["usd"])
-        vol = float(pair["volume"]["h24"])
-    except:
-        liq = None
-        vol = None
+        url = f"https://api.coingecko.com/api/v3/coins/{symbol}/ohlc?vs_currency=usd&days=2"
+        data = requests.get(url, timeout=10).json()
 
-    chain = pair["chainId"]
-    pair_id = pair["pairAddress"]
+        if not isinstance(data, list) or len(data) < 20:
+            return None  # недостаточно данных
 
-    candles_url = f"https://api.dexscreener.com/latest/dex/candles/{chain}/{pair_id}?tf={tf}"
-    cdata = requests.get(candles_url).json()
+        df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close"])
+        return df.tail(20)
 
-    if "candles" not in cdata:
-        return None, liq, vol
-
-    df = pd.DataFrame(cdata["candles"])
-    df["close"] = df["close"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
-
-    return df, liq, vol
+    except Exception:
+        return None
 
 
-# ---------- INDICATORS ----------
+# =====================================================================
+#   Indicators
+# =====================================================================
 def rsi(series, period=14):
     delta = series.diff()
+
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
+
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
+
     rs = avg_gain / avg_loss
-    return (100 - (100 / (1 + rs))).iloc[-1]
+    return 100 - (100 / (1 + rs))
+
 
 def atr(df, period=14):
-    hl = df["high"] - df["low"]
-    hc = (df["high"] - df["close"].shift()).abs()
-    lc = (df["low"] - df["close"].shift()).abs()
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    return tr.rolling(period).mean().iloc[-1]
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift()).abs()
+    low_close = (df["low"] - df["close"].shift()).abs()
 
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean().iloc[-1]
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
 
 
-# ---------- MARKET DATA ----------
+# =====================================================================
+#   Market Info (CoinGecko)
+# =====================================================================
 def get_market(symbol):
     url = f"https://api.coingecko.com/api/v3/coins/{symbol}"
     data = requests.get(url).json()
+
     price = float(data["market_data"]["current_price"]["usd"])
     cap = float(data["market_data"]["market_cap"]["usd"])
     cap_change = float(data["market_data"]["market_cap_change_percentage_24h"])
+
     return price, cap, cap_change
 
 
-# ---------- POSITION SIZE ----------
+# =====================================================================
+#   Dex Info
+# =====================================================================
+def dex(symbol):
+    try:
+        url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
+        data = requests.get(url, timeout=10).json()
+
+        if not data.get("pairs"):
+            return None, None, None
+
+        p = data["pairs"][0]
+        return (
+            float(p["liquidity"]["usd"]),
+            float(p["volume"]["h24"]),
+            p["dexId"]
+        )
+
+    except:
+        return None, None, None
+
+
+# =====================================================================
+#   Position calculator
+# =====================================================================
 def calc_position(entry, stop):
     risk = DEPOSIT * RISK_PERCENT / 100
     dist = abs(entry - stop)
+
     if dist == 0:
         return 0
-    return round(risk / dist, 5)
+
+    size = risk / dist
+    return round(size, 5)
 
 
-# ---------- START MESSAGE ----------
-send("Bot started. 1h+15m + RSI 35/65 + EMA50/200 Trend Filter + ATR + TP1/TP2")
+# =====================================================================
+#   Start Message
+# =====================================================================
+send("Bot started. Strategy: RSI 35/65 + Risk 1% + TP1/TP2 | TF = 1H | DEX + CoinGecko")
 
 
-# ============================================================
-# ========================= MAIN LOOP =========================
-# ============================================================
-
+# =====================================================================
+#   MAIN LOOP
+# =====================================================================
 while True:
     try:
-        for cg, rules in SYMBOLS.items():
-            ticker = rules["ticker"]
-            query = rules["query"]
+        for cg_id, symbol in SYMBOLS.items():
 
-            price, cap, cap_ch = get_market(cg)
+            # === Market Data ===
+            price, cap, cap_ch = get_market(cg_id)
 
-            # ----------------- 1H OHLC -----------------
-            df1h, liq, vol = get_ohlc_from_dex(query, tf="1h")
-            if df1h is None or len(df1h) < 50:
+            # === OHLC Data ===
+            df = get_ohlc(cg_id)
+            if df is None:
                 continue
 
+            rsi_val = rsi(df["close"]).iloc[-1]
+            atr_val = atr(df).iloc[-1]
+
+            if pd.isna(rsi_val) or pd.isna(atr_val):
+                continue
+
+            # === DEX Data ===
+            liq, vol, dex_name = dex(symbol)
             if liq is None or liq < 100000:
                 continue
 
-            rsi1h = rsi(df1h["close"])
-            atr1h = atr(df1h)
-            ema50 = ema(df1h["close"], 50)
-            ema200 = ema(df1h["close"], 200)
-
-            # ----------------- 15M OHLC -----------------
-            df15, _, _ = get_ohlc_from_dex(query, tf="15m")
-            if df15 is None or len(df15) < 50:
-                continue
-
-            rsi15 = rsi(df15["close"])
-
-            # ----------------- TREND -----------------
-            trend = "UP" if ema50 > ema200 else "DOWN"
-
-            # ----------------- SIGNAL -----------------
+            # === SIGNAL LOGIC ===
             signal = None
 
-            # LONG logic
-            if rsi1h <= RSI_LOW and rsi15 <= RSI_LOW and trend == "UP":
-                signal = "LONG"
-                stop = price - atr1h
-                tp1 = price + atr1h
-                tp2 = price + atr1h * 2
-
-            # SHORT logic
-            if rsi1h >= RSI_HIGH and rsi15 >= RSI_HIGH and trend == "DOWN":
+            if rsi_val >= RSI_HIGH:
                 signal = "SHORT"
-                stop = price + atr1h
-                tp1 = price - atr1h
-                tp2 = price - atr1h * 2
+                stop = price + atr_val
+                tp1 = price - atr_val
+                tp2 = price - atr_val * 2
+
+            elif rsi_val <= RSI_LOW:
+                signal = "LONG"
+                stop = price - atr_val
+                tp1 = price + atr_val
+                tp2 = price + atr_val * 2
 
             if not signal:
                 continue
 
-            sig_key = f"{ticker}_{signal}"
-            if LAST_SIGNAL.get(sig_key) == signal:
+            # === Anti-duplicate ===
+            key = f"{symbol}_{signal}"
+            if LAST_SIGNAL.get(key) == signal:
                 continue
-            LAST_SIGNAL[sig_key] = signal
+            LAST_SIGNAL[key] = signal
 
+            # === Position size ===
             size = calc_position(price, stop)
 
+            # === MESSAGE ===
             msg = f"""
-SIGNAL: {signal} | {ticker}
+SIGNAL: {signal} | {symbol}
 
 Price: {price}
-RSI H1: {round(rsi1h,2)}
-RSI 15m: {round(rsi15,2)}
-ATR H1: {round(atr1h,4)}
-
-Trend: {trend}
-EMA50: {round(ema50,2)}
-EMA200: {round(ema200,2)}
+RSI: {round(rsi_val,2)}
+ATR: {round(atr_val,4)}
 
 Entry: {price}
 STOP: {round(stop,4)}
 TP1: {round(tp1,4)}
 TP2: {round(tp2,4)}
 
+Deposit: {DEPOSIT}$
+Risk: {RISK_PERCENT}%
 Position size: {size}
-Liquidity: {liq}$
-Volume: {vol}$
 
-Cap: {cap}
+Cap: {cap}$
 Cap 24h: {cap_ch}%
 
-Time: {datetime.utcnow()}
+DEX: {dex_name}
+Liquidity: {liq}$
+Volume 24h: {vol}$
+
+Time UTC: {datetime.utcnow()}
 """
 
             send(msg)
@@ -207,5 +224,5 @@ Time: {datetime.utcnow()}
         time.sleep(INTERVAL)
 
     except Exception as e:
-        send("BOT ERROR: " + str(e))
+        send(f"BOT ERROR: {str(e)}")
         time.sleep(60)
