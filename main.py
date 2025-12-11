@@ -2,10 +2,9 @@ import requests
 import time
 import pandas as pd
 from datetime import datetime
-from flask import Flask, jsonify
-import threading
 import matplotlib.pyplot as plt
 import io
+import threading
 
 # ============================================================
 # CONFIG
@@ -14,19 +13,18 @@ import io
 BOT_TOKEN = "YOUR_BOT_TOKEN"
 CHAT_ID = "YOUR_CHAT_ID"
 
-INTERVAL = 3600  # таймфрейм 1 час
+INTERVAL = 3600  # TF = 1H
 RISK_PERCENT = 1
 DEPOSIT = 100
 
 RSI_LOW = 35
 RSI_HIGH = 65
 
-VOL_FILTER = 500000  # минимальный объём с Dex
-FAKE_PUMP_LIMIT = 0.03  # 3% рост за час
-FAKE_VOLUME_FACTOR = 2  # рост объёма в 2 раза
+VOL_FILTER = 500000
+FAKE_PUMP_LIMIT = 0.03
+FAKE_VOLUME_FACTOR = 2
 
 LAST_SIGNAL = {}
-LAST_STATUS = {}
 
 SYMBOLS = {
     "bitcoin": "BTC",
@@ -63,7 +61,7 @@ def get_ohlc(symbol):
     data = requests.get(url).json()
     if not isinstance(data, list) or len(data) < 50:
         return None
-    df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close"])
+    df = pd.DataFrame(data, columns=["time","open","high","low","close"])
     return df.tail(50)
 
 def get_market(symbol):
@@ -79,11 +77,7 @@ def dex(symbol):
     if not data.get("pairs"):
         return None, None, None
     p = data["pairs"][0]
-    return (
-        float(p["liquidity"]["usd"]),
-        float(p["volume"]["h24"]),
-        p["dexId"]
-    )
+    return float(p["liquidity"]["usd"]), float(p["volume"]["h24"]), p["dexId"]
 
 # ============================================================
 # INDICATORS
@@ -118,23 +112,21 @@ def calc_position(entry, stop):
     return round(risk / dist, 5) if dist > 0 else 0
 
 # ============================================================
-# GRAPH GENERATOR
+# CHART
 # ============================================================
 
 def make_chart(df, symbol):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
 
-    # Price + EMA
     ax1.plot(df["close"], label="Close")
     ax1.plot(df["ema20"], label="EMA20")
     ax1.plot(df["ema50"], label="EMA50")
-    ax1.set_title(f"{symbol} Price Chart")
+    ax1.set_title(symbol)
     ax1.legend()
 
-    # RSI
     ax2.plot(df["rsi"], label="RSI", color="purple")
-    ax2.axhline(35, color="green", linestyle="--")
-    ax2.axhline(65, color="red", linestyle="--")
+    ax2.axhline(35, linestyle="--", color="green")
+    ax2.axhline(65, linestyle="--", color="red")
     ax2.legend()
 
     img = io.BytesIO()
@@ -145,11 +137,11 @@ def make_chart(df, symbol):
     return img
 
 # ============================================================
-# BOT LOGIC
+# BOT LOOP
 # ============================================================
 
 def bot_loop():
-    send("🚀 Bot started with GRAPH + ANTI-FAKE-PUMP")
+    send("🚀 Bot started. RSI+EMA+ATR + AntiFakePump + L2 tokens")
 
     while True:
         try:
@@ -158,7 +150,6 @@ def bot_loop():
 
                 price, cap, cap_ch = get_market(cg_id)
                 df = get_ohlc(cg_id)
-
                 if df is None:
                     continue
 
@@ -174,27 +165,19 @@ def bot_loop():
                 rsi_val = df["rsi"].iloc[-1]
                 atr_val = df["atr"].iloc[-1]
 
-                # ==========================
-                # ANTI-FAKE-PUMP FILTER
-                # ==========================
+                # Anti Fake Pump
                 price_prev = df["close"].iloc[-2]
-                price_change = (price - price_prev) / price_prev
+                price_ch = (price - price_prev) / price_prev
 
-                avg_vol = vol / 24  # условное среднее
-
-                fake_pump = (
-                        price_change > FAKE_PUMP_LIMIT or
-                        vol > avg_vol * FAKE_VOLUME_FACTOR or
-                        abs(price - price_prev) > atr_val * 3
+                fake = (
+                    price_ch > FAKE_PUMP_LIMIT or
+                    vol > (vol / 24) * FAKE_VOLUME_FACTOR or
+                    abs(price - price_prev) > atr_val * 3
                 )
 
-                if fake_pump:
-                    send(f"⚠️ Fake Pump detected! Signal for {symbol} blocked.")
+                if fake:
+                    send(f"⚠️ Fake Pump detected: {symbol}. Signal blocked.")
                     continue
-
-                # ==========================
-                # TREND FILTER
-                # ==========================
 
                 trend_long = df["ema20"].iloc[-1] > df["ema50"].iloc[-1]
                 trend_short = df["ema20"].iloc[-1] < df["ema50"].iloc[-1]
@@ -216,66 +199,44 @@ def bot_loop():
                 if not signal:
                     continue
 
-                # avoid duplicates
                 key = f"{symbol}_{signal}"
                 if LAST_SIGNAL.get(key) == signal:
                     continue
                 LAST_SIGNAL[key] = signal
 
-                # position size
                 size = calc_position(price, stop)
 
-                color = "🟩" if signal == "LONG" else "🟥"
-
                 msg = f"""
-{color} <b>{signal} | {symbol}</b>
+<b>{signal} | {symbol}</b>
 
-<b>Price:</b> {price}
-<b>RSI:</b> {round(rsi_val,2)}
-<b>ATR:</b> {round(atr_val,4)}
+Price: {price}
+RSI: {round(rsi_val,2)}
+ATR: {round(atr_val,4)}
 
-<b>STOP:</b> {round(stop,4)}
-<b>TP1:</b> {round(tp1,4)}
-<b>TP2:</b> {round(tp2,4)}
+STOP: {round(stop,4)}
+TP1: {round(tp1,4)}
+TP2: {round(tp2,4)}
 
-<b>Size:</b> {size}
-<b>Cap:</b> {cap}$
-<b>Cap 24h:</b> {cap_ch}%
+Size: {size}
 
-<b>DEX:</b> {dex_name}
-<b>Vol 24h:</b> {vol}$
+Cap: {cap}$
+Cap 24h: {cap_ch}%
 
-⏱ UTC: {datetime.utcnow()}
+DEX: {dex_name}
+Vol24h: {vol}$
+
+UTC: {datetime.utcnow()}
 """
-
                 send(msg)
 
-                # send chart
                 img = make_chart(df, symbol)
                 send_photo(img)
 
             time.sleep(INTERVAL)
 
         except Exception as e:
-            send(f"❌ BOT ERROR: {str(e)}")
+            send(f"❌ ERROR: {str(e)}")
             time.sleep(30)
 
-# ============================================================
-# SIMPLE WEB STATUS
-# ============================================================
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return jsonify({"status": "RUNNING", "time": str(datetime.utcnow())})
-
-def web_thread():
-    app.run(host="0.0.0.0", port=8000)
-
-# ============================================================
-# RUN
-# ============================================================
-
-threading.Thread(target=web_thread).start()
+# START BOT
 threading.Thread(target=bot_loop).start()
