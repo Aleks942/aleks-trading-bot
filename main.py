@@ -1,15 +1,14 @@
 import requests
 import time
-from datetime import datetime
 import pandas as pd
-import os
+from datetime import datetime
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
 
-INTERVAL = 3600  # 1 ЧАС
-RISK_PERCENT = 1
+INTERVAL = 900     # 15 минут, не перегружает Dexter API
 DEPOSIT = 100
+RISK_PERCENT = 1
 
 RSI_LOW = 35
 RSI_HIGH = 65
@@ -17,36 +16,59 @@ RSI_HIGH = 65
 LAST_SIGNAL = {}
 
 SYMBOLS = {
-    "bitcoin": "BTC",
-    "ethereum": "ETH",
-
-    # L2
-    "arbitrum": "ARB",
-    "optimism": "OP",
-    "polygon": "MATIC",
-    "immutable-x": "IMX",
-    "starknet": "STRK",
-    "zksync": "ZK",
-    "metis-token": "METIS",
-    "loopring": "LRC"
+    "bitcoin":    {"ticker": "BTC",  "query": "btc"},
+    "ethereum":   {"ticker": "ETH",  "query": "eth"},
+    "solana":     {"ticker": "SOL",  "query": "sol"},
+    "arbitrum":   {"ticker": "ARB",  "query": "arb"},
+    "optimism":   {"ticker": "OP",   "query": "op"},
+    "polygon":    {"ticker": "MATIC","query": "matic"},
+    "immutable-x":{"ticker": "IMX",  "query": "imx"},
+    "starknet":   {"ticker": "STRK", "query": "strk"},
+    "zksync":     {"ticker": "ZK",   "query": "zk"},
 }
-
 
 def send(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
 
+# ------------------ OHLC FROM DEX SCREENER ------------------
 
-def get_ohlc(symbol):
-    url = f"https://api.coingecko.com/api/v3/coins/{symbol}/ohlc?vs_currency=usd&days=2"
-    data = requests.get(url, timeout=20).json()
+def get_ohlc_from_dex(symbol, tf="1h"):
+    url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
+    data = requests.get(url).json()
 
-    if not isinstance(data, list) or len(data) < 20:
-        return None
+    if not data or "pairs" not in data or not data["pairs"]:
+        return None, None, None
 
-    df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close"])
-    return df.tail(20)
+    pair = data["pairs"][0]
 
+    # Liquidity & volume
+    try:
+        liq = float(pair["liquidity"]["usd"])
+        vol = float(pair["volume"]["h24"])
+    except:
+        liq = None
+        vol = None
+
+    # Fetch OHLC candles
+    # DexScreener candle endpoint:
+    # /candles/{chain}/{pairId}?tf=1h
+    chain = pair["chainId"]
+    pair_id = pair["pairAddress"]
+
+    candles_url = f"https://api.dexscreener.com/latest/dex/candles/{chain}/{pair_id}?tf={tf}"
+    cdata = requests.get(candles_url).json()
+
+    if "candles" not in cdata:
+        return None, liq, vol
+
+    df = pd.DataFrame(cdata["candles"])
+    df["close"] = df["close"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+    return df, liq, vol
+
+# ------------------ RSI ------------------
 
 def rsi(series, period=14):
     delta = series.diff()
@@ -54,98 +76,65 @@ def rsi(series, period=14):
     loss = -delta.clip(upper=0)
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
-
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    r = 100 - (100 / (1 + rs))
+    return r.iloc[-1]
 
+# ------------------ ATR ------------------
 
 def atr(df, period=14):
-    high_low = df["high"] - df["low"]
-    high_close = abs(df["high"] - df["close"].shift())
-    low_close = abs(df["low"] - df["close"].shift())
+    hl = df["high"] - df["low"]
+    hc = (df["high"] - df["close"].shift()).abs()
+    lc = (df["low"] - df["close"].shift()).abs()
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    return tr.rolling(period).mean().iloc[-1]
 
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-
-    return true_range.rolling(period).mean()
-
+# ------------------ MARKET VIA CG ------------------
 
 def get_market(symbol):
     url = f"https://api.coingecko.com/api/v3/coins/{symbol}"
-    data = requests.get(url, timeout=20).json()
+    data = requests.get(url).json()
+    price = float(data["market_data"]["current_price"]["usd"])
+    cap = float(data["market_data"]["market_cap"]["usd"])
+    cap_change = float(data["market_data"]["market_cap_change_percentage_24h"])
+    return price, cap, cap_change
 
-    md = data.get("market_data")
-    if not md:
-        return None
-
-    price = float(md["current_price"]["usd"])
-    cap = float(md["market_cap"]["usd"])
-    cap_change = float(md["market_cap_change_percentage_24h"])
-    price_change = float(md["price_change_percentage_24h"])
-
-    return price, cap, cap_change, price_change
-
-
-def dex(symbol):
-    url = f"https://api.dexscreener.com/latest/dex/search?q={symbol}"
-    data = requests.get(url, timeout=20).json()
-
-    pairs = data.get("pairs")
-    if not pairs:
-        return None, None, None
-
-    p = pairs[0]
-    liq = float(p["liquidity"]["usd"])
-    vol = float(p["volume"]["h24"])
-    dex_name = p["dexId"]
-
-    return liq, vol, dex_name
-
+# ------------------ POSITION SIZE ------------------
 
 def calc_position(entry, stop):
     risk = DEPOSIT * RISK_PERCENT / 100
-    distance = abs(entry - stop)
-
-    if distance == 0:
+    dist = abs(entry - stop)
+    if dist == 0:
         return 0
+    return round(risk / dist, 5)
 
-    size = risk / distance
-    return round(size, 5)
+# ---------------------------------------------------
+# ------------------ MAIN LOOP ----------------------
+# ---------------------------------------------------
 
-
-send("Bot started. Strategy: RSI 35/65 + Risk 1% + TP1/TP2 | TF = 1H | DEX + CoinGecko")
+send("Bot started. RSI 35/65 + ATR + Risk 1% + TP1/TP2 | TF = 1h + 15m | DexScreener + CoinGecko")
 
 while True:
     try:
-        for cg_id, symbol in SYMBOLS.items():
+        for cg, rules in SYMBOLS.items():
+            ticker = rules["ticker"]
+            query = rules["query"]
 
-            market = get_market(cg_id)
-            if not market:
+            # ---- MARKET ----
+            price, cap, cap_ch = get_market(cg)
+
+            # ---- OHLC DEX ----
+            df, liq, vol = get_ohlc_from_dex(query, tf="1h")
+            if df is None or len(df) < 20:
                 continue
 
-            price, cap, cap_ch, price_ch = market
-
-            df = get_ohlc(cg_id)
-            if df is None:
+            if liq is None or liq < 100000:
                 continue
 
-            rsi_series = rsi(df["close"])
-            atr_series = atr(df)
+            rsi_val = rsi(df["close"])
+            atr_val = atr(df)
 
-            if len(rsi_series.dropna()) == 0 or len(atr_series.dropna()) == 0:
-                continue
-
-            rsi_val = float(rsi_series.iloc[-1])
-            atr_val = float(atr_series.iloc[-1])
-
-            if atr_val == 0:
-                continue
-
-            liq, vol, dex_name = dex(symbol)
-            if not liq or liq < 100000:
-                continue
-
+            # --------- SIGNAL LOGIC ---------
             signal = None
 
             if rsi_val >= RSI_HIGH:
@@ -163,45 +152,43 @@ while True:
             if not signal:
                 continue
 
-            key = f"{symbol}_{signal}"
-            last_price = LAST_SIGNAL.get(key)
-
-            if last_price and abs(last_price - price) < atr_val:
+            # --------- ANTI DUPLICATES ---------
+            sig_key = f"{ticker}_{signal}"
+            if LAST_SIGNAL.get(sig_key) == signal:
                 continue
+            LAST_SIGNAL[sig_key] = signal
 
-            LAST_SIGNAL[key] = price
-
+            # --------- POSITION ---------
             size = calc_position(price, stop)
 
+            # --------- SEND ---------
             msg = f"""
-SIGNAL: {signal} | {symbol}
+SIGNAL: {signal} | {ticker}
 
-Price: {round(price, 4)}
-RSI: {round(rsi_val, 2)}
-ATR: {round(atr_val, 5)}
+Price: {price}
+RSI: {round(rsi_val,2)}
+ATR: {round(atr_val,4)}
 
-Entry: {round(price, 4)}
-STOP: {round(stop, 4)}
-TP1: {round(tp1, 4)}
-TP2: {round(tp2, 4)}
+Entry: {price}
+STOP: {round(stop,4)}
+TP1: {round(tp1,4)}
+TP2: {round(tp2,4)}
 
-Deposit: {DEPOSIT}$
 Risk: {RISK_PERCENT}%
 Position size: {size}
 
-Cap: {int(cap)}$
-Cap 24h: {round(cap_ch, 2)}%
+Cap: {cap}
+Cap 24h: {cap_ch}%
+Liquidity: {liq}$
+Volume 24h: {vol}$
 
-DEX: {dex_name}
-Liquidity: {int(liq)}$
-Volume 24h: {int(vol)}$
-
-Time UTC: {datetime.utcnow()}
+TF: 1h (Dex OHLC)
+Time: {datetime.utcnow()}
 """
             send(msg)
 
         time.sleep(INTERVAL)
 
     except Exception as e:
-        send(f"BOT ERROR: {str(e)}")
-        time.sleep(120)
+        send("BOT ERROR: " + str(e))
+        time.sleep(60)
