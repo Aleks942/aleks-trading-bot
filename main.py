@@ -4,9 +4,12 @@ import json
 import requests
 import pandas as pd
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 
-print("=== BOT STARTED — STEP 13 (ANTI-SPAM FIXED) ===", flush=True)
+print("=== BOT STARTED — STEP 14 (MODES) ===", flush=True)
+
+# ===== MODE =====
+BOT_MODE = "LIVE"  # DEBUG | LIVE | DAILY
 
 # ===== ENV =====
 load_dotenv()
@@ -16,6 +19,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 CHECK_INTERVAL = 60 * 5  # 5 минут
 
 STATE_FILE = "last_sent_state.json"
+DAILY_FILE = "daily_report_state.json"
 
 # ===== LIMITS =====
 PRICE_CHANGE_LIMIT = 1.0   # %
@@ -28,19 +32,19 @@ RSI_PERIOD = 14
 
 ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync"]
 
-# ===== STATE =====
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {}
+# ===== FILE UTILS =====
+def load_json(path, default):
+    if not os.path.exists(path):
+        return default
     try:
-        with open(STATE_FILE, "r") as f:
+        with open(path, "r") as f:
             return json.load(f)
     except:
-        return {}
+        return default
 
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
 # ===== TELEGRAM =====
 def send_telegram(text):
@@ -104,27 +108,39 @@ def dex_data(coin):
     except:
         return None
 
-# ===== ANTI-SPAM LOGIC =====
+# ===== EVENT CHECK =====
 def is_event(last, current):
     if last is None:
-        return True  # первое сообщение
-
+        return True
     price_diff = abs((current["price"] - last["price"]) / last["price"]) * 100
     rsi_diff = abs(current["rsi"] - last["rsi"])
+    return price_diff >= PRICE_CHANGE_LIMIT or rsi_diff >= RSI_CHANGE_LIMIT
 
-    return (
-        price_diff >= PRICE_CHANGE_LIMIT or
-        rsi_diff >= RSI_CHANGE_LIMIT
+# ===== DAILY REPORT =====
+def daily_report(daily_state, summary):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    if daily_state.get("date") == today:
+        return daily_state
+
+    send_telegram(
+        "📊 <b>DAILY REPORT</b>\n" +
+        "\n".join(summary) if summary else "📊 DAILY REPORT\nНет значимых событий."
     )
+
+    return {"date": today}
 
 # ===== MAIN LOOP =====
 def run_bot():
-    state = load_state()
+    state = load_json(STATE_FILE, {})
+    daily_state = load_json(DAILY_FILE, {})
+    daily_summary = []
 
     if not state:
-        send_telegram("✅ ЭТАП 1 АКТИВЕН: анти-спам включён.")
+        send_telegram(f"✅ ЭТАП 2 АКТИВЕН. РЕЖИМ: {BOT_MODE}")
 
     while True:
+        now = datetime.utcnow() + timedelta(hours=2)  # Польша
+
         for alt in ALT_TOKENS:
             market = get_market_data(alt)
             df = get_ohlc(alt)
@@ -137,18 +153,13 @@ def run_bot():
             r = rsi(df)
             liq, vol, dex_name = dex
 
-            current = {
-                "price": price,
-                "rsi": r,
-                "time": datetime.utcnow().isoformat()
-            }
-
+            current = {"price": price, "rsi": r, "time": now.isoformat()}
             last = state.get(alt)
 
             if not is_event(last, current):
                 continue
 
-            send_telegram(
+            msg = (
                 f"📊 <b>{alt.upper()}</b>\n"
                 f"Цена: {price}$ ({round(price_chg,2)}%)\n"
                 f"RSI: {r}\n"
@@ -156,8 +167,19 @@ def run_bot():
                 f"Ликв: {round(liq,0)}$ | Объём: {round(vol,0)}$"
             )
 
+            if BOT_MODE in ["DEBUG", "LIVE"]:
+                send_telegram(msg)
+
+            if BOT_MODE == "DAILY":
+                daily_summary.append(f"{alt.upper()} → Цена {round(price_chg,2)}%, RSI {r}")
+
             state[alt] = current
-            save_state(state)
+            save_json(STATE_FILE, state)
+
+        if BOT_MODE == "DAILY" and now.hour == 20 and now.minute >= 30:
+            daily_state = daily_report(daily_state, daily_summary)
+            save_json(DAILY_FILE, daily_state)
+            daily_summary.clear()
 
         time.sleep(CHECK_INTERVAL)
 
