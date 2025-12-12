@@ -95,4 +95,123 @@ def dynamic_threshold(series):
 def memo_by_strength(strength):
     if strength == 4:
         return (
-            "• не входи сразу\
+            "• не входи сразу\n"
+            "• жди ретест / паузу\n"
+            "• проверь BTC (флет = плюс)\n"
+            "• вход только с понятным стопом"
+        )
+    if strength >= 5:
+        return (
+            "• проверь: это НЕ перегрев?\n"
+            "• если есть база — можно планировать\n"
+            "• не увеличивай риск\n"
+            "• не входи на эмоциях"
+        )
+    return ""
+
+# ===== LOGICAL CONCLUSION =====
+def logical_conclusion(stage, strength, chg_4h):
+    if stage == "ЗАПУСК" and strength >= 4 and abs(chg_4h) < OVERHEAT_4H:
+        return "🟢 <b>ВХОД ВОЗМОЖЕН</b>\n(если появится структура)"
+    return "🔴 <b>НЕ ВХОД</b>\n(рано, поздно или риск)"
+
+# ===== MAIN =====
+def run_bot():
+    state = load_state()
+    send_telegram(
+        "📡 <b>Радар рынка запущен</b>\n"
+        "200 монет • 1h + 4h • стадии • сила • памятка • вывод"
+    )
+
+    while True:
+        coins = get_top_coins()
+        now_ts = datetime.utcnow().timestamp()
+
+        for coin in coins:
+            cid = coin.get("id")
+            sym = coin.get("symbol", "").upper()
+
+            prices, volumes = get_market_chart(cid)
+            if prices is None:
+                continue
+
+            last = state.get(cid, {})
+            if last and now_ts - last.get("time", 0) < COOLDOWN_MIN * 60:
+                continue
+
+            # ===== расчёты =====
+            price_range = (prices.max() - prices.min()) / prices.mean() * 100
+            vol_avg = volumes[:-12].mean()
+            vol_now = volumes.iloc[-1]
+            vol_mult = vol_now / vol_avg if vol_avg > 0 else 0
+
+            chg_1h = pct_change(prices, 1)
+            chg_4h = pct_change(prices, 4)
+            dyn_thr = dynamic_threshold(prices)
+
+            stage = None
+            reasons = []
+            strength = 0
+
+            # ===== СИЛА: ОБЪЁМ =====
+            if vol_mult >= 2:
+                strength += 1
+            if vol_mult >= 3:
+                strength += 1
+
+            # ===== ПОДГОТОВКА =====
+            if vol_mult >= 2 and price_range <= FLAT_RANGE_MAX:
+                stage = "ПОДГОТОВКА"
+                reasons += ["Цена во флете", f"Объём x{vol_mult:.1f}"]
+                strength += 1
+
+            # ===== ЗАПУСК =====
+            if vol_mult >= 3 and abs(chg_1h) >= dyn_thr:
+                stage = "ЗАПУСК"
+                reasons += [f"Импульс 1ч {chg_1h:.2f}%", "Выход из флета"]
+                strength += 1
+
+            # ===== ПЕРЕГРЕВ =====
+            if abs(chg_4h) >= OVERHEAT_4H:
+                stage = "ПЕРЕГРЕВ"
+                reasons += [f"Импульс 4ч {chg_4h:.2f}%", "Риск выдоха"]
+                strength += 1
+
+            # ===== ПОДТВЕРЖДЕНИЕ ТФ =====
+            if chg_1h * chg_4h > 0:
+                strength += 1
+                reasons.append("1h + 4h в одну сторону")
+
+            if stage is None or strength < 2:
+                continue
+
+            if last.get("stage") == stage and last.get("strength") == strength:
+                continue
+
+            emoji = {"ПОДГОТОВКА": "🟢", "ЗАПУСК": "🟡", "ПЕРЕГРЕВ": "🔴"}[stage]
+            fire = "🔥" * strength
+            memo = memo_by_strength(strength)
+            conclusion = logical_conclusion(stage, strength, chg_4h)
+
+            msg = (
+                f"{emoji} <b>{sym}</b>\n"
+                f"Стадия: <b>{stage}</b>\n"
+                f"Сила: {fire} ({strength}/5)\n\n"
+                f"1ч: {chg_1h:.2f}% | 4ч: {chg_4h:.2f}%\n"
+                f"Объём: x{vol_mult:.1f}\n\n"
+                f"Причины:\n• " + "\n• ".join(reasons)
+            )
+
+            if memo:
+                msg += f"\n\n📌 <b>ПАМЯТКА</b>:\n{memo}"
+
+            msg += f"\n\n🧠 <b>ВЫВОД</b>:\n{conclusion}"
+
+            send_telegram(msg)
+            state[cid] = {"stage": stage, "strength": strength, "time": now_ts}
+            save_state(state)
+
+        time.sleep(CHECK_INTERVAL)
+
+if __name__ == "__main__":
+    run_bot()
