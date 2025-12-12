@@ -7,21 +7,21 @@ from dotenv import load_dotenv
 from datetime import datetime
 import statistics
 
-print("=== MARKET RADAR WITH STAGES + STRENGTH STARTED ===", flush=True)
+print("=== MARKET RADAR FINAL (STAGES + STRENGTH + MEMO + CONCLUSION) ===", flush=True)
 
 # ===== ENV =====
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = 60 * 10
+CHECK_INTERVAL = 60 * 10   # 10 минут
 STATE_FILE = "radar_state.json"
 
 # ===== PARAMS =====
 COINS_LIMIT = 200
-FLAT_RANGE_MAX = 1.5
-OVERHEAT_4H = 6.0
-COOLDOWN_MIN = 90
+FLAT_RANGE_MAX = 1.5       # % диапазон флета
+OVERHEAT_4H = 6.0          # % для перегрева
+COOLDOWN_MIN = 90          # анти-спам в минутах
 
 # ===== TELEGRAM =====
 def send_telegram(text):
@@ -91,5 +91,8 @@ def dynamic_threshold(series):
         return 1.0
     return max(statistics.mean(changes) * 2, 0.8)
 
-# ===== MAIN =====
-def r
+# ===== MEMO =====
+def memo_by_strength(strength):
+    if strength == 4:
+        return (
+            "• не входи сразу\
