@@ -6,7 +6,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-print("=== BOT STARTED — LIQUIDATIONS + RSI CONTEXT ===", flush=True)
+print("=== BOT STARTED — BTC CONTEXT → ALT SIGNALS ===", flush=True)
 
 # ===== ENV =====
 load_dotenv()
@@ -16,7 +16,16 @@ CHAT_ID = os.getenv("CHAT_ID")
 CHECK_INTERVAL = 60 * 10  # 10 минут
 LIQ_RATIO = 1.5
 
-STATE_FILE = "liq_rsi_state.json"
+STATE_FILE = "btc_alt_state.json"
+
+ALT_MIN_LIQUIDITY = 100_000
+ALT_MIN_VOLUME = 250_000
+
+RSI_PERIOD = 14
+RSI_LONG_LEVEL = 40
+RSI_SHORT_LEVEL = 60
+
+ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync"]
 
 # ===== TELEGRAM =====
 def send_telegram(text):
@@ -27,41 +36,10 @@ def send_telegram(text):
             data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
             timeout=15
         )
-    except Exception as e:
-        print("Telegram error:", e, flush=True)
-
-# ===== LIQUIDATIONS =====
-def get_liquidations(symbol="BTC"):
-    try:
-        url = f"https://fapi.coinglass.com/api/futures/liquidation_snapshot?symbol={symbol}"
-        data = requests.get(url, timeout=20).json()["data"]
-        return float(data["longVolUsd"]), float(data["shortVolUsd"])
     except:
-        return None, None
+        pass
 
-# ===== RSI BTC =====
-def get_btc_rsi():
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-        params = {"vs_currency": "usd", "days": 3}
-        prices = requests.get(url, params=params, timeout=20).json().get("prices", [])
-        if len(prices) < 60:
-            return None, None
-
-        df = pd.DataFrame({"close": [p[1] for p in prices]})
-        diff = df["close"].diff()
-        gain = diff.where(diff > 0, 0)
-        loss = -diff.where(diff < 0, 0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-
-        return float(rsi.iloc[-2]), float(rsi.iloc[-1])
-    except:
-        return None, None
-
-# ===== STATE =====
+# ===== UTILS =====
 def load_state():
     if not os.path.exists(STATE_FILE):
         return {}
@@ -75,66 +53,110 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
-# ===== MAIN LOGIC =====
+# ===== BTC LIQUIDATIONS =====
+def get_liquidations():
+    try:
+        url = "https://fapi.coinglass.com/api/futures/liquidation_snapshot?symbol=BTC"
+        data = requests.get(url, timeout=20).json()["data"]
+        return float(data["longVolUsd"]), float(data["shortVolUsd"])
+    except:
+        return None, None
+
+# ===== RSI =====
+def get_rsi(prices):
+    diff = prices.diff()
+    gain = diff.where(diff > 0, 0)
+    loss = -diff.where(diff < 0, 0)
+    avg_gain = gain.rolling(RSI_PERIOD).mean()
+    avg_loss = loss.rolling(RSI_PERIOD).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return float(rsi.iloc[-2]), float(rsi.iloc[-1])
+
+def get_ohlc(coin):
+    try:
+        url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart"
+        params = {"vs_currency": "usd", "days": 3}
+        prices = requests.get(url, params=params, timeout=20).json().get("prices", [])
+        if len(prices) < 60:
+            return None
+        return pd.Series([p[1] for p in prices])
+    except:
+        return None
+
+# ===== DEX =====
+def dex_data(coin):
+    try:
+        url = "https://api.dexscreener.com/latest/dex/search"
+        data = requests.get(url, params={"q": coin}, timeout=15).json()
+        pairs = data.get("pairs", [])
+        if not pairs:
+            return None
+        pair = max(pairs, key=lambda x: x.get("liquidity", {}).get("usd", 0))
+        liq = pair.get("liquidity", {}).get("usd", 0)
+        vol = pair.get("volume", {}).get("h24", 0)
+        if liq < ALT_MIN_LIQUIDITY or vol < ALT_MIN_VOLUME:
+            return None
+        return pair.get("dexId", "unknown")
+    except:
+        return None
+
+# ===== MAIN =====
 def run_bot():
     state = load_state()
-    send_telegram("✅ Контекст ликвидаций + RSI активирован.")
+    send_telegram("✅ BTC-контекст управляет сигналами по альтам")
 
     while True:
-        long_liq, short_liq = get_liquidations("BTC")
-        rsi_prev, rsi_now = get_btc_rsi()
+        long_liq, short_liq = get_liquidations()
 
-        if None in (long_liq, short_liq, rsi_prev, rsi_now):
+        btc_prices = get_ohlc("bitcoin")
+        if btc_prices is None or long_liq is None:
             time.sleep(CHECK_INTERVAL)
             continue
 
-        context = None
-        reason = ""
-        action = ""
+        btc_rsi_prev, btc_rsi_now = get_rsi(btc_prices)
 
-        if long_liq > short_liq * LIQ_RATIO:
-            context = "LONG"
-            reason = "Вынесли слабые лонги"
-            if rsi_prev < 40 and rsi_now > rsi_prev:
-                action = "ЖДАТЬ ПОДТВЕРЖДЕНИЕ И ИСКАТЬ LONG"
-            else:
-                action = "ЖДАТЬ"
+        btc_context = "WAIT"
+        if long_liq > short_liq * LIQ_RATIO and btc_rsi_prev < 40 and btc_rsi_now > btc_rsi_prev:
+            btc_context = "LONG"
+        elif short_liq > long_liq * LIQ_RATIO and btc_rsi_prev > 60 and btc_rsi_now < btc_rsi_prev:
+            btc_context = "SHORT"
 
-        elif short_liq > long_liq * LIQ_RATIO:
-            context = "SHORT"
-            reason = "Вынесли слабые шорты"
-            if rsi_prev > 60 and rsi_now < rsi_prev:
-                action = "ЖДАТЬ СИГНАЛ НА SHORT"
-            else:
-                action = "ЖДАТЬ"
+        if state.get("btc_context") != btc_context:
+            send_telegram(f"🔄 BTC КОНТЕКСТ: <b>{btc_context}</b>")
+            state["btc_context"] = btc_context
+            save_state(state)
 
-        else:
-            context = "FLAT"
-            reason = "Баланс ликвидаций"
-            action = "НЕ ЛЕЗТЬ В РЫНОК"
-
-        key = f"{int(long_liq)}_{int(short_liq)}_{round(rsi_now,1)}"
-        if state.get("last") == key:
+        if btc_context == "WAIT":
             time.sleep(CHECK_INTERVAL)
             continue
 
-        emoji = "🟢" if context == "LONG" else "🔴" if context == "SHORT" else "⚪"
+        for alt in ALT_TOKENS:
+            prices = get_ohlc(alt)
+            dex = dex_data(alt)
+            if prices is None or dex is None:
+                continue
 
-        send_telegram(
-            f"💥 <b>ЛИКВИДАЦИИ BTC (24ч)</b>\n\n"
-            f"LONG: {round(long_liq/1e6,1)}M$\n"
-            f"SHORT: {round(short_liq/1e6,1)}M$\n\n"
-            f"{emoji} <b>КОНТЕКСТ ДЛЯ {context}</b>\n"
-            f"Причина: {reason}\n"
-            f"RSI BTC: {round(rsi_prev,1)} → {round(rsi_now,1)}\n"
-            f"➡️ {action}"
-        )
+            rsi_prev, rsi_now = get_rsi(prices)
+            price_now = prices.iloc[-1]
 
-        state["last"] = key
-        save_state(state)
+            if btc_context == "LONG" and rsi_prev < RSI_LONG_LEVEL and rsi_now > rsi_prev:
+                send_telegram(
+                    f"🚀 <b>{alt.upper()} LONG</b>\n"
+                    f"Цена: {round(price_now,4)}\n"
+                    f"RSI: {round(rsi_prev,1)} → {round(rsi_now,1)}\n"
+                    f"Контекст: BTC LONG"
+                )
+
+            if btc_context == "SHORT" and rsi_prev > RSI_SHORT_LEVEL and rsi_now < rsi_prev:
+                send_telegram(
+                    f"🔻 <b>{alt.upper()} SHORT</b>\n"
+                    f"Цена: {round(price_now,4)}\n"
+                    f"RSI: {round(rsi_prev,1)} → {round(rsi_now,1)}\n"
+                    f"Контекст: BTC SHORT"
+                )
 
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     run_bot()
-
