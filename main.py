@@ -6,7 +6,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime
 
-print("=== BOT STARTED — STEP 13 (ANTI-SPAM) ===", flush=True)
+print("=== BOT STARTED — STEP 13 (ANTI-SPAM FIXED) ===", flush=True)
 
 # ===== ENV =====
 load_dotenv()
@@ -18,9 +18,8 @@ CHECK_INTERVAL = 60 * 5  # 5 минут
 STATE_FILE = "last_sent_state.json"
 
 # ===== LIMITS =====
-PRICE_CHANGE_LIMIT = 1.0      # %
-RSI_CHANGE_LIMIT = 2.0        # пункта
-CAP_CHANGE_LIMIT = 1.0        # %
+PRICE_CHANGE_LIMIT = 1.0   # %
+RSI_CHANGE_LIMIT = 2.0     # пункта
 
 ALT_MIN_LIQUIDITY = 100_000
 ALT_MIN_VOLUME = 250_000
@@ -29,7 +28,7 @@ RSI_PERIOD = 14
 
 ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync"]
 
-# ===== FILE UTILS =====
+# ===== STATE =====
 def load_state():
     if not os.path.exists(STATE_FILE):
         return {}
@@ -39,31 +38,29 @@ def load_state():
     except:
         return {}
 
-def save_state(data):
+def save_state(state):
     with open(STATE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(state, f, indent=2)
 
 # ===== TELEGRAM =====
 def send_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML"
-        }, timeout=15)
+        requests.post(
+            url,
+            data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=15
+        )
     except Exception as e:
         print("Telegram error:", e, flush=True)
 
-# ===== DATA SOURCES =====
+# ===== DATA =====
 def get_market_data(coin):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin}"
         data = requests.get(url, timeout=20).json()["market_data"]
         return (
             data["current_price"]["usd"],
-            data["market_cap"]["usd"],
-            data["market_cap_change_percentage_24h"],
             data["price_change_percentage_24h"]
         )
     except:
@@ -107,56 +104,54 @@ def dex_data(coin):
     except:
         return None
 
-# ===== ANTI-SPAM CHECK =====
-def is_significant_change(last, current):
-    if not last:
-        return True
+# ===== ANTI-SPAM LOGIC =====
+def is_event(last, current):
+    if last is None:
+        return True  # первое сообщение
 
     price_diff = abs((current["price"] - last["price"]) / last["price"]) * 100
     rsi_diff = abs(current["rsi"] - last["rsi"])
-    cap_diff = abs((current["cap"] - last["cap"]) / last["cap"]) * 100
 
     return (
         price_diff >= PRICE_CHANGE_LIMIT or
-        rsi_diff >= RSI_CHANGE_LIMIT or
-        cap_diff >= CAP_CHANGE_LIMIT
+        rsi_diff >= RSI_CHANGE_LIMIT
     )
 
 # ===== MAIN LOOP =====
 def run_bot():
     state = load_state()
-    send_telegram("✅ ЭТАП 1 АКТИВЕН: анти-спам и анти-дубликаты работают.")
+
+    if not state:
+        send_telegram("✅ ЭТАП 1 АКТИВЕН: анти-спам включён.")
 
     while True:
         for alt in ALT_TOKENS:
-            df = get_ohlc(alt)
             market = get_market_data(alt)
+            df = get_ohlc(alt)
             dex = dex_data(alt)
 
-            if df is None or market is None or dex is None:
+            if market is None or df is None or dex is None:
                 continue
 
-            price, cap, cap_chg, price_chg = market
+            price, price_chg = market
             r = rsi(df)
             liq, vol, dex_name = dex
 
             current = {
                 "price": price,
                 "rsi": r,
-                "cap": cap,
                 "time": datetime.utcnow().isoformat()
             }
 
             last = state.get(alt)
 
-            if not is_significant_change(last, current):
-                continue  # 🚫 анти-спам
+            if not is_event(last, current):
+                continue
 
             send_telegram(
                 f"📊 <b>{alt.upper()}</b>\n"
                 f"Цена: {price}$ ({round(price_chg,2)}%)\n"
                 f"RSI: {r}\n"
-                f"Cap: {round(cap,0)}$\n"
                 f"DEX: {dex_name}\n"
                 f"Ликв: {round(liq,0)}$ | Объём: {round(vol,0)}$"
             )
@@ -168,4 +163,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
