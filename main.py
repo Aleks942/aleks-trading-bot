@@ -6,7 +6,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-print("=== BOT STARTED — STEP 14 (MODES) ===", flush=True)
+print("=== BOT STARTED — STEP 15 (TRADING SIGNALS) ===", flush=True)
 
 # ===== MODE =====
 BOT_MODE = "LIVE"  # DEBUG | LIVE | DAILY
@@ -16,23 +16,30 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-CHECK_INTERVAL = 60 * 5  # 5 минут
+CHECK_INTERVAL = 60 * 5
 
 STATE_FILE = "last_sent_state.json"
 DAILY_FILE = "daily_report_state.json"
+SIGNALS_FILE = "signals_state.json"
+
+# ===== RISK =====
+START_DEPOSIT = 100.0
+RISK_PERCENT = 1.0
+RISK_USD = START_DEPOSIT * (RISK_PERCENT / 100.0)
 
 # ===== LIMITS =====
-PRICE_CHANGE_LIMIT = 1.0   # %
-RSI_CHANGE_LIMIT = 2.0     # пункта
-
 ALT_MIN_LIQUIDITY = 100_000
 ALT_MIN_VOLUME = 250_000
 
 RSI_PERIOD = 14
+ATR_PERIOD = 14
+
+RSI_LONG = 35
+RSI_SHORT = 65
 
 ALT_TOKENS = ["solana", "near", "arbitrum", "mina", "starknet", "zksync"]
 
-# ===== FILE UTILS =====
+# ===== UTILS =====
 def load_json(path, default):
     if not os.path.exists(path):
         return default
@@ -50,11 +57,11 @@ def save_json(path, data):
 def send_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(
-            url,
-            data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
-            timeout=15
-        )
+        requests.post(url, data={
+            "chat_id": CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML"
+        }, timeout=15)
     except Exception as e:
         print("Telegram error:", e, flush=True)
 
@@ -63,10 +70,7 @@ def get_market_data(coin):
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin}"
         data = requests.get(url, timeout=20).json()["market_data"]
-        return (
-            data["current_price"]["usd"],
-            data["price_change_percentage_24h"]
-        )
+        return data["current_price"]["usd"]
     except:
         return None
 
@@ -82,14 +86,18 @@ def get_ohlc(coin):
         return None
 
 def rsi(df):
-    diff = df["close"].diff()
-    gain = diff.where(diff > 0, 0)
-    loss = -diff.where(diff < 0, 0)
-    avg_gain = gain.rolling(RSI_PERIOD).mean()
-    avg_loss = loss.rolling(RSI_PERIOD).mean()
-    rs = avg_gain / avg_loss
+    d = df["close"].diff()
+    g = d.where(d > 0, 0)
+    l = -d.where(d < 0, 0)
+    ag = g.rolling(RSI_PERIOD).mean()
+    al = l.rolling(RSI_PERIOD).mean()
+    rs = ag / al
     r = 100 - (100 / (1 + rs))
-    return round(float(r.dropna().iloc[-1]), 2)
+    return float(r.dropna().iloc[-1])
+
+def atr(df):
+    tr = df["close"].diff().abs()
+    return float(tr.rolling(ATR_PERIOD).mean().dropna().iloc[-1])
 
 def dex_data(coin):
     try:
@@ -108,80 +116,75 @@ def dex_data(coin):
     except:
         return None
 
-# ===== EVENT CHECK =====
-def is_event(last, current):
-    if last is None:
-        return True
-    price_diff = abs((current["price"] - last["price"]) / last["price"]) * 100
-    rsi_diff = abs(current["rsi"] - last["rsi"])
-    return price_diff >= PRICE_CHANGE_LIMIT or rsi_diff >= RSI_CHANGE_LIMIT
-
-# ===== DAILY REPORT =====
-def daily_report(daily_state, summary):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if daily_state.get("date") == today:
-        return daily_state
-
-    send_telegram(
-        "📊 <b>DAILY REPORT</b>\n" +
-        "\n".join(summary) if summary else "📊 DAILY REPORT\nНет значимых событий."
-    )
-
-    return {"date": today}
-
-# ===== MAIN LOOP =====
+# ===== MAIN =====
 def run_bot():
-    state = load_json(STATE_FILE, {})
+    last_state = load_json(STATE_FILE, {})
     daily_state = load_json(DAILY_FILE, {})
-    daily_summary = []
+    signal_state = load_json(SIGNALS_FILE, {})
+    daily_signals = []
 
-    if not state:
-        send_telegram(f"✅ ЭТАП 2 АКТИВЕН. РЕЖИМ: {BOT_MODE}")
+    if not last_state:
+        send_telegram(f"✅ ЭТАП 3 АКТИВЕН. РЕЖИМ: {BOT_MODE}")
 
     while True:
-        now = datetime.utcnow() + timedelta(hours=2)  # Польша
+        now = datetime.utcnow() + timedelta(hours=2)
 
         for alt in ALT_TOKENS:
-            market = get_market_data(alt)
+            price = get_market_data(alt)
             df = get_ohlc(alt)
             dex = dex_data(alt)
 
-            if market is None or df is None or dex is None:
+            if price is None or df is None or dex is None:
                 continue
 
-            price, price_chg = market
             r = rsi(df)
+            a = atr(df)
             liq, vol, dex_name = dex
 
-            current = {"price": price, "rsi": r, "time": now.isoformat()}
-            last = state.get(alt)
+            prev = signal_state.get(alt, {})
+            prev_rsi = prev.get("rsi")
 
-            if not is_event(last, current):
-                continue
+            signal = None
 
-            msg = (
-                f"📊 <b>{alt.upper()}</b>\n"
-                f"Цена: {price}$ ({round(price_chg,2)}%)\n"
-                f"RSI: {r}\n"
-                f"DEX: {dex_name}\n"
-                f"Ликв: {round(liq,0)}$ | Объём: {round(vol,0)}$"
-            )
+            if prev_rsi is not None:
+                if prev_rsi < RSI_LONG and r >= RSI_LONG:
+                    signal = "LONG"
+                if prev_rsi > RSI_SHORT and r <= RSI_SHORT:
+                    signal = "SHORT"
 
-            if BOT_MODE in ["DEBUG", "LIVE"]:
-                send_telegram(msg)
+            if signal:
+                stop = price - a if signal == "LONG" else price + a
+                tp1 = price + a if signal == "LONG" else price - a
+                tp2 = price + 2 * a if signal == "LONG" else price - 2 * a
+                size = round(RISK_USD / abs(price - stop), 6)
 
-            if BOT_MODE == "DAILY":
-                daily_summary.append(f"{alt.upper()} → Цена {round(price_chg,2)}%, RSI {r}")
+                msg = (
+                    f"🚨 <b>{signal} {alt.upper()}</b>\n"
+                    f"Цена: {round(price,4)}\n"
+                    f"RSI: {round(prev_rsi,2)} → {round(r,2)}\n"
+                    f"STOP: {round(stop,4)}\n"
+                    f"TP1: {round(tp1,4)} | TP2: {round(tp2,4)}\n"
+                    f"Размер: {size}\n"
+                    f"DEX: {dex_name}"
+                )
 
-            state[alt] = current
-            save_json(STATE_FILE, state)
+                if BOT_MODE in ["DEBUG", "LIVE"]:
+                    send_telegram(msg)
+
+                if BOT_MODE == "DAILY":
+                    daily_signals.append(msg)
+
+            signal_state[alt] = {"rsi": r}
+            save_json(SIGNALS_FILE, signal_state)
 
         if BOT_MODE == "DAILY" and now.hour == 20 and now.minute >= 30:
-            daily_state = daily_report(daily_state, daily_summary)
-            save_json(DAILY_FILE, daily_state)
-            daily_summary.clear()
+            if daily_signals:
+                send_telegram("📊 <b>DAILY SIGNALS</b>\n\n" + "\n\n".join(daily_signals))
+            daily_signals.clear()
+            save_json(DAILY_FILE, {"date": now.strftime("%Y-%m-%d")})
 
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     run_bot()
+
