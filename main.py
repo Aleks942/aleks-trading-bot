@@ -23,6 +23,9 @@ FLAT_RANGE_MAX = 1.5       # % диапазон флета
 OVERHEAT_4H = 6.0          # % для перегрева
 COOLDOWN_MIN = 90          # анти-спам в минутах
 
+# ===== START CONTROL =====
+last_start_in_memory = None
+
 # ===== TELEGRAM =====
 def send_telegram(text):
     try:
@@ -46,8 +49,32 @@ def load_state():
         return {}
 
 def save_state(data):
-    with open(STATE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except:
+        pass
+
+# ===== START MESSAGE (1 РАЗ В СУТКИ) =====
+def send_start_once_per_day(state):
+    global last_start_in_memory
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    if last_start_in_memory == today:
+        return
+
+    if state.get("_last_start") == today:
+        last_start_in_memory = today
+        return
+
+    send_telegram(
+        "📡 <b>Радар рынка активен</b>\n"
+        "200 монет • 1h + 4h • стадии • сила • памятка • вывод"
+    )
+
+    state["_last_start"] = today
+    last_start_in_memory = today
+    save_state(state)
 
 # ===== DATA =====
 def get_top_coins():
@@ -118,10 +145,7 @@ def logical_conclusion(stage, strength, chg_4h):
 # ===== MAIN =====
 def run_bot():
     state = load_state()
-    send_telegram(
-        "📡 <b>Радар рынка запущен</b>\n"
-        "200 монет • 1h + 4h • стадии • сила • памятка • вывод"
-    )
+    send_start_once_per_day(state)
 
     while True:
         coins = get_top_coins()
@@ -139,7 +163,6 @@ def run_bot():
             if last and now_ts - last.get("time", 0) < COOLDOWN_MIN * 60:
                 continue
 
-            # ===== расчёты =====
             price_range = (prices.max() - prices.min()) / prices.mean() * 100
             vol_avg = volumes[:-12].mean()
             vol_now = volumes.iloc[-1]
@@ -153,31 +176,24 @@ def run_bot():
             reasons = []
             strength = 0
 
-            # ===== СИЛА: ОБЪЁМ =====
-            if vol_mult >= 2:
-                strength += 1
-            if vol_mult >= 3:
-                strength += 1
+            if vol_mult >= 2: strength += 1
+            if vol_mult >= 3: strength += 1
 
-            # ===== ПОДГОТОВКА =====
             if vol_mult >= 2 and price_range <= FLAT_RANGE_MAX:
                 stage = "ПОДГОТОВКА"
                 reasons += ["Цена во флете", f"Объём x{vol_mult:.1f}"]
                 strength += 1
 
-            # ===== ЗАПУСК =====
             if vol_mult >= 3 and abs(chg_1h) >= dyn_thr:
                 stage = "ЗАПУСК"
                 reasons += [f"Импульс 1ч {chg_1h:.2f}%", "Выход из флета"]
                 strength += 1
 
-            # ===== ПЕРЕГРЕВ =====
             if abs(chg_4h) >= OVERHEAT_4H:
                 stage = "ПЕРЕГРЕВ"
                 reasons += [f"Импульс 4ч {chg_4h:.2f}%", "Риск выдоха"]
                 strength += 1
 
-            # ===== ПОДТВЕРЖДЕНИЕ ТФ =====
             if chg_1h * chg_4h > 0:
                 strength += 1
                 reasons.append("1h + 4h в одну сторону")
