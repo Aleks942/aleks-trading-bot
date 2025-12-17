@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import statistics
 
-print("=== MARKET RADAR FINAL (STAGES + STRENGTH + MEMO + CONCLUSION) ===", flush=True)
+print("=== MARKET RADAR FINAL (SOFT MODE) ===", flush=True)
 
 # ===== ENV =====
 load_dotenv()
@@ -69,7 +69,8 @@ def send_start_once_per_day(state):
 
     send_telegram(
         "📡 <b>Радар рынка активен</b>\n"
-        "200 монет • 1h + 4h • стадии • сила • памятка • вывод"
+        "200 монет • 1h + 4h • стадии • сила • памятка • вывод\n"
+        "Режим: <b>МЯГКИЙ (ранние кандидаты)</b>"
     )
 
     state["_last_start"] = today
@@ -120,11 +121,13 @@ def dynamic_threshold(series):
 
 # ===== MEMO =====
 def memo_by_strength(strength):
+    if strength == 1:
+        return "• ранний кандидат\n• просто наблюдать\n• без входа"
     if strength == 4:
         return (
             "• не входи сразу\n"
             "• жди ретест / паузу\n"
-            "• проверь BTC (флет = плюс)\n"
+            "• проверь BTC\n"
             "• вход только с понятным стопом"
         )
     if strength >= 5:
@@ -140,7 +143,9 @@ def memo_by_strength(strength):
 def logical_conclusion(stage, strength, chg_4h):
     if stage == "ЗАПУСК" and strength >= 4 and abs(chg_4h) < OVERHEAT_4H:
         return "🟢 <b>ВХОД ВОЗМОЖЕН</b>\n(если появится структура)"
-    return "🔴 <b>НЕ ВХОД</b>\n(рано, поздно или риск)"
+    if stage == "ПОДГОТОВКА":
+        return "🟡 <b>НАБЛЮДАТЬ</b>\n(ранний этап)"
+    return "🔴 <b>НЕ ВХОД</b>"
 
 # ===== MAIN =====
 def run_bot():
@@ -198,7 +203,12 @@ def run_bot():
                 strength += 1
                 reasons.append("1h + 4h в одну сторону")
 
-            if stage is None or strength < 2:
+            # ===== МЯГКОЕ УСЛОВИЕ =====
+            if stage is None:
+                continue
+            if stage == "ПОДГОТОВКА" and strength < 1:
+                continue
+            if stage != "ПОДГОТОВКА" and strength < 2:
                 continue
 
             if last.get("stage") == stage and last.get("strength") == strength:
