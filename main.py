@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 import statistics
 
-print("=== MARKET RADAR FINAL (SOFT MODE) ===", flush=True)
+print("=== MARKET RADAR FINAL (ENV START FIX) ===", flush=True)
 
 # ===== ENV =====
 load_dotenv()
@@ -15,92 +15,71 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL = 60 * 10   # 10 минут
-STATE_FILE = "radar_state.json"
 
 # ===== PARAMS =====
 COINS_LIMIT = 200
-FLAT_RANGE_MAX = 1.5       # % диапазон флета
-OVERHEAT_4H = 6.0          # % для перегрева
-COOLDOWN_MIN = 90          # анти-спам в минутах
-
-# ===== START CONTROL =====
-last_start_in_memory = None
+FLAT_RANGE_MAX = 1.5
+OVERHEAT_4H = 6.0
+COOLDOWN_MIN = 90
 
 # ===== TELEGRAM =====
 def send_telegram(text):
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         requests.post(
-            url,
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
             timeout=15
         )
     except:
         pass
 
-# ===== STATE =====
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {}
-    try:
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_state(data):
-    try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(data, f, indent=2)
-    except:
-        pass
-
-# ===== START MESSAGE (1 РАЗ В СУТКИ) =====
-def send_start_once_per_day(state):
-    global last_start_in_memory
+# ===== START MESSAGE (ENV FIX) =====
+def send_start_once_per_day():
     today = datetime.utcnow().strftime("%Y-%m-%d")
+    last = os.getenv("LAST_START_DATE")
 
-    if last_start_in_memory == today:
-        return
-
-    if state.get("_last_start") == today:
-        last_start_in_memory = today
+    if last == today:
         return
 
     send_telegram(
-        "📡 <b>Радар рынка активен</b>\n"
-        "200 монет • 1h + 4h • стадии • сила • памятка • вывод\n"
-        "Режим: <b>МЯГКИЙ (ранние кандидаты)</b>"
+        "📡 <b>Радар рынка запущен</b>\n"
+        "200 монет • 1h + 4h • стадии • сила • памятка • вывод"
     )
 
-    state["_last_start"] = today
-    last_start_in_memory = today
-    save_state(state)
+    # Railway сохраняет ENV между рестартами
+    os.environ["LAST_START_DATE"] = today
 
 # ===== DATA =====
 def get_top_coins():
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "order": "market_cap_desc",
-        "per_page": COINS_LIMIT,
-        "page": 1,
-        "sparkline": False
-    }
     try:
-        return requests.get(url, params=params, timeout=30).json()
+        return requests.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": COINS_LIMIT,
+                "page": 1,
+                "sparkline": False
+            },
+            timeout=30
+        ).json()
     except:
         return []
 
 def get_market_chart(coin_id):
     try:
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-        params = {"vs_currency": "usd", "days": 2}
-        data = requests.get(url, params=params, timeout=20).json()
+        data = requests.get(
+            f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
+            params={"vs_currency": "usd", "days": 2},
+            timeout=20
+        ).json()
+
         prices = [p[1] for p in data.get("prices", [])]
         volumes = [v[1] for v in data.get("total_volumes", [])]
+
         if len(prices) < 24:
             return None, None
+
         return pd.Series(prices), pd.Series(volumes)
     except:
         return None, None
@@ -108,11 +87,11 @@ def get_market_chart(coin_id):
 def pct_change(series, h):
     if len(series) < h + 1:
         return 0
-    return (series.iloc[-1] - series.iloc[-(h+1)]) / series.iloc[-(h+1)] * 100
+    return (series.iloc[-1] - series.iloc[-(h + 1)]) / series.iloc[-(h + 1)] * 100
 
 def dynamic_threshold(series):
     changes = [
-        abs((series.iloc[i] - series.iloc[i-1]) / series.iloc[i-1] * 100)
+        abs((series.iloc[i] - series.iloc[i - 1]) / series.iloc[i - 1] * 100)
         for i in range(1, len(series))
     ]
     if len(changes) < 10:
@@ -126,31 +105,29 @@ def memo_by_strength(strength):
     if strength == 4:
         return (
             "• не входи сразу\n"
-            "• жди ретест / паузу\n"
+            "• жди паузу / ретест\n"
             "• проверь BTC\n"
-            "• вход только с понятным стопом"
+            "• вход только со стопом"
         )
     if strength >= 5:
         return (
-            "• проверь: это НЕ перегрев?\n"
-            "• если есть база — можно планировать\n"
-            "• не увеличивай риск\n"
-            "• не входи на эмоциях"
+            "• не FOMO\n"
+            "• проверь перегрев\n"
+            "• риск не увеличивать"
         )
     return ""
 
-# ===== LOGICAL CONCLUSION =====
 def logical_conclusion(stage, strength, chg_4h):
     if stage == "ЗАПУСК" and strength >= 4 and abs(chg_4h) < OVERHEAT_4H:
         return "🟢 <b>ВХОД ВОЗМОЖЕН</b>\n(если появится структура)"
     if stage == "ПОДГОТОВКА":
-        return "🟡 <b>НАБЛЮДАТЬ</b>\n(ранний этап)"
+        return "🟡 <b>НАБЛЮДАТЬ</b>"
     return "🔴 <b>НЕ ВХОД</b>"
 
 # ===== MAIN =====
 def run_bot():
-    state = load_state()
-    send_start_once_per_day(state)
+    send_start_once_per_day()
+    state = {}
 
     while True:
         coins = get_top_coins()
@@ -164,8 +141,8 @@ def run_bot():
             if prices is None:
                 continue
 
-            last = state.get(cid, {})
-            if last and now_ts - last.get("time", 0) < COOLDOWN_MIN * 60:
+            last = state.get(cid)
+            if last and now_ts - last["time"] < COOLDOWN_MIN * 60:
                 continue
 
             price_range = (prices.max() - prices.min()) / prices.mean() * 100
@@ -186,24 +163,23 @@ def run_bot():
 
             if vol_mult >= 2 and price_range <= FLAT_RANGE_MAX:
                 stage = "ПОДГОТОВКА"
-                reasons += ["Цена во флете", f"Объём x{vol_mult:.1f}"]
                 strength += 1
+                reasons += ["Флет", f"Объём x{vol_mult:.1f}"]
 
             if vol_mult >= 3 and abs(chg_1h) >= dyn_thr:
                 stage = "ЗАПУСК"
-                reasons += [f"Импульс 1ч {chg_1h:.2f}%", "Выход из флета"]
                 strength += 1
+                reasons += [f"Импульс 1ч {chg_1h:.2f}%"]
 
             if abs(chg_4h) >= OVERHEAT_4H:
                 stage = "ПЕРЕГРЕВ"
-                reasons += [f"Импульс 4ч {chg_4h:.2f}%", "Риск выдоха"]
                 strength += 1
+                reasons += [f"Импульс 4ч {chg_4h:.2f}%"]
 
             if chg_1h * chg_4h > 0:
                 strength += 1
                 reasons.append("1h + 4h в одну сторону")
 
-            # ===== МЯГКОЕ УСЛОВИЕ =====
             if stage is None:
                 continue
             if stage == "ПОДГОТОВКА" and strength < 1:
@@ -211,13 +187,11 @@ def run_bot():
             if stage != "ПОДГОТОВКА" and strength < 2:
                 continue
 
-            if last.get("stage") == stage and last.get("strength") == strength:
+            if last and last["stage"] == stage and last["strength"] == strength:
                 continue
 
             emoji = {"ПОДГОТОВКА": "🟢", "ЗАПУСК": "🟡", "ПЕРЕГРЕВ": "🔴"}[stage]
             fire = "🔥" * strength
-            memo = memo_by_strength(strength)
-            conclusion = logical_conclusion(stage, strength, chg_4h)
 
             msg = (
                 f"{emoji} <b>{sym}</b>\n"
@@ -228,16 +202,17 @@ def run_bot():
                 f"Причины:\n• " + "\n• ".join(reasons)
             )
 
+            memo = memo_by_strength(strength)
             if memo:
                 msg += f"\n\n📌 <b>ПАМЯТКА</b>:\n{memo}"
 
-            msg += f"\n\n🧠 <b>ВЫВОД</b>:\n{conclusion}"
+            msg += f"\n\n🧠 <b>ВЫВОД</b>:\n{logical_conclusion(stage, strength, chg_4h)}"
 
             send_telegram(msg)
             state[cid] = {"stage": stage, "strength": strength, "time": now_ts}
-            save_state(state)
 
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     run_bot()
+    
