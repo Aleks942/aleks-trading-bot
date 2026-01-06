@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def range_breakout_5m(df: pd.DataFrame):
     """
     Range → Breakout (5m)
@@ -12,15 +13,15 @@ def range_breakout_5m(df: pd.DataFrame):
     if df is None or len(df) < 20:
         return None
 
-    # параметры
-   FLAT_CANDLES = 15        # было 20
-MAX_RANGE_PCT = 4.0     # было 2.5
-MIN_CANDLE_MOVE = 0.6   # было 1.2
-MAX_CANDLE_MOVE = 5.0   # было 3.0
-VOL_MULT = 1.2          # было 1.8
-
+    # === ПАРАМЕТРЫ (ТЕСТОВЫЕ, ОСЛАБЛЕННЫЕ) ===
+    FLAT_CANDLES = 15        # было 20
+    MAX_RANGE_PCT = 4.0     # было 2.5
+    MIN_CANDLE_MOVE = 0.6   # было 1.2
+    MAX_CANDLE_MOVE = 5.0   # было 3.0
+    VOL_MULT = 1.2          # было 1.8
 
     recent = df.iloc[-FLAT_CANDLES:]
+
     high = recent["high"].max()
     low = recent["low"].min()
     mid = (high + low) / 2
@@ -30,14 +31,13 @@ VOL_MULT = 1.2          # было 1.8
 
     range_pct = (high - low) / mid * 100
 
-    # это не флет
+    # не флет
     if range_pct > MAX_RANGE_PCT:
         return None
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # движение последней свечи
     candle_move = abs((last["close"] - prev["close"]) / prev["close"] * 100)
 
     if candle_move < MIN_CANDLE_MOVE or candle_move > MAX_CANDLE_MOVE:
@@ -52,7 +52,7 @@ VOL_MULT = 1.2          # было 1.8
     if volume_x < VOL_MULT:
         return None
 
-    # пробой вверх или вниз
+    # пробой диапазона
     if last["close"] > high or last["close"] < low:
         return {
             "type": "RANGE_BREAKOUT",
