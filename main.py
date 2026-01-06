@@ -7,9 +7,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import statistics
 
-# >>> RB ADDED >>> (импорт модуля Range → Breakout)
 from signals import range_breakout_5m
-# <<< RB ADDED <<<
 
 print("=== CRYPTO RADAR (SAFE + AGGRESSIVE + CONFIRM + STATS + 07:30 FORECAST) ===", flush=True)
 
@@ -38,10 +36,13 @@ AGG_IMPULSE_FACTOR = 0.7               # доля от динамическог�
 SAFE_MIN_STRENGTH = 4                  # сила для SAFE
 CONFIRM_WINDOW_HOURS = 6               # окно "AGG → SAFE подтверждён"
 
-# >>> RB ADDED >>> (настройки Range → Breakout)
+# ===== RANGE → BREAKOUT (5m) =====
+# Включение/выключение без правки кода:
+# RB_ENABLED=1 -> включено (по умолчанию)
+# RB_ENABLED=0 -> выключено
+RB_ENABLED = os.getenv("RB_ENABLED", "1").strip() == "1"
 RB_COOLDOWN_MIN = 60                   # анти-спам по синему сигналу на монету
-RB_WINDOW = 30                         # сколько точек берём для "5m" аппроксимации
-# <<< RB ADDED <<<
+RB_WINDOW = 30                         # сколько точек берём для аппроксимации "5m"
 
 # отчёты
 FORECAST_HOUR = 7
@@ -116,32 +117,6 @@ def get_market_chart(coin_id):
     except:
         return None, None
 
-# >>> RB ADDED >>> (аппроксимация "5m свечей" из CoinGecko серии)
-def build_5m_candles(prices: pd.Series, volumes: pd.Series, window: int = 30):
-    """
-    CoinGecko отдаёт серии цен/объёма (не OHLC).
-    Мы строим упрощённые "свечи" для детектора флета/пробоя.
-    Это ИНФО-радар, не торговые свечи.
-    """
-    if prices is None or volumes is None:
-        return None
-    if len(prices) < window or len(volumes) < window:
-        return None
-
-    df = pd.DataFrame({
-        "close": prices.iloc[-window:].values,
-        "volume": volumes.iloc[-window:].values
-    })
-
-    df["open"] = df["close"].shift(1)
-    df["high"] = df[["open", "close"]].max(axis=1)
-    df["low"] = df[["open", "close"]].min(axis=1)
-    df = df.dropna()
-
-    # порядок колонок важен для signals.py
-    return df[["open", "high", "low", "close", "volume"]]
-# <<< RB ADDED <<<
-
 def pct_change(series, h):
     if len(series) < h + 1:
         return 0.0
@@ -166,6 +141,33 @@ def dynamic_threshold(series):
         return max(statistics.mean(changes) * 2, 0.8)
     except:
         return 1.0
+
+# ===== RANGE → BREAKOUT helpers =====
+def build_5m_candles(prices: pd.Series, volumes: pd.Series, window: int = 30):
+    """
+    CoinGecko отдаёт серии цен/объёма (не OHLC).
+    Мы строим упрощённые "свечи" для детектора флета/пробоя.
+    Это INFO-радар, не торговые свечи.
+    """
+    if prices is None or volumes is None:
+        return None
+    if len(prices) < window or len(volumes) < window:
+        return None
+
+    df = pd.DataFrame({
+        "close": prices.iloc[-window:].values,
+        "volume": volumes.iloc[-window:].values
+    })
+
+    df["open"] = df["close"].shift(1)
+    df["high"] = df[["open", "close"]].max(axis=1)
+    df["low"] = df[["open", "close"]].min(axis=1)
+    df = df.dropna()
+
+    if df.empty:
+        return None
+
+    return df[["open", "high", "low", "close", "volume"]]
 
 # ===== MEMO + CONCLUSION =====
 def memo_intraday():
@@ -238,13 +240,24 @@ def run_bot():
     coins_state = state.get("coins", {})
     stats = state.get("stats", {})
     if not stats:
-        stats = {"day": warsaw_now().strftime("%Y-%m-%d"), "agg": 0, "safe": 0, "confirmed": 0,
-                 "week": warsaw_now().strftime("%G-%V"), "w_agg": 0, "w_safe": 0, "w_confirmed": 0}
+        stats = {
+            "day": warsaw_now().strftime("%Y-%m-%d"),
+            "agg": 0,
+            "safe": 0,
+            "confirmed": 0,
+            "week": warsaw_now().strftime("%G-%V"),
+            "w_agg": 0,
+            "w_safe": 0,
+            "w_confirmed": 0
+        }
 
     # стартовое сообщение один раз за сутки — через state-файл (чтобы не спамило при рестартах)
     today = warsaw_now().strftime("%Y-%m-%d")
     if state.get("start_day") != today:
-        send_telegram("📡 <b>Радар рынка запущен</b>\n200 монет • 1h + 4h • SAFE + AGGRESSIVE • статистика • прогноз 07:30")
+        send_telegram(
+            "📡 <b>Радар рынка запущен</b>\n"
+            "200 монет • 1h + 4h • SAFE + AGGRESSIVE • статистика • прогноз 07:30"
+        )
         state["start_day"] = today
 
     save_state({"coins": coins_state, "stats": stats, **{k: v for k, v in state.items() if k not in ("coins", "stats")}})
@@ -273,8 +286,6 @@ def run_bot():
                 coins = get_top_coins()
                 mode = market_mode_snapshot(coins)
 
-                # ориентир по вчерашнему качеству (если есть)
-                y = state.get("yesterday_quality", None)
                 hint = "Тактика: SAFE — основной, AGGRESSIVE — только как радар."
                 if mode.startswith("🟢"):
                     hint = "Тактика: смотри AGGRESSIVE, жди SAFE, работай выборочно."
@@ -314,10 +325,11 @@ def run_bot():
                 state["yesterday_quality"] = quality
 
             # ===== недельный отчёт (Пн 10:00 Warsaw) =====
-            if (now.weekday() == WEEKLY_REPORT_WEEKDAY and
-                should_fire_at(now, WEEKLY_REPORT_HOUR, WEEKLY_REPORT_MINUTE) and
-                state.get("last_weekly_week") != week_key):
-
+            if (
+                now.weekday() == WEEKLY_REPORT_WEEKDAY
+                and should_fire_at(now, WEEKLY_REPORT_HOUR, WEEKLY_REPORT_MINUTE)
+                and state.get("last_weekly_week") != week_key
+            ):
                 send_telegram(
                     "📈 <b>СТАТИСТИКА НЕДЕЛИ</b>\n\n"
                     f"AGGRESSIVE: {stats.get('w_agg', 0)}\n"
@@ -340,33 +352,32 @@ def run_bot():
 
                 cs = coins_state.get(cid, {})
 
-                # >>> RB ADDED >>> (Range → Breakout: инфо-радар, не вход)
-                rb_last_ts = cs.get("rb_last_ts", 0)
-                rb_last_range = cs.get("rb_last_range", None)
+                # ===== RANGE → BREAKOUT (5m) INFO ONLY =====
+                # Не влияет на SAFE/AGG. Работает даже если монета на cooldown по основному радару.
+                if RB_ENABLED:
+                    rb_last_ts = cs.get("rb_last_ts", 0)
+                    rb_last_range = cs.get("rb_last_range", None)
 
-                if (not rb_last_ts) or ((now_ts - rb_last_ts) >= (RB_COOLDOWN_MIN * 60)):
-                    candles_5m = build_5m_candles(prices, volumes, window=RB_WINDOW)
-                    rb = range_breakout_5m(candles_5m) if candles_5m is not None else None
+                    if (not rb_last_ts) or ((now_ts - rb_last_ts) >= (RB_COOLDOWN_MIN * 60)):
+                        candles_5m = build_5m_candles(prices, volumes, window=RB_WINDOW)
+                        rb = range_breakout_5m(candles_5m) if candles_5m is not None else None
 
-                    # signals.py уже содержит фильтр "не после +3%"
-                    if rb:
-                        # анти-дубликат: один и тот же флет не повторяем
-                        if rb_last_range != rb.get("range_pct"):
-                            send_telegram(
-                                "🔵 <b>RANGE → BREAKOUT (5m)</b>\n\n"
-                                f"<b>{sym}</b>\n"
-                                f"Флет: {rb['range_pct']}%\n"
-                                f"Свеча: +{rb['candle_move']}%\n"
-                                f"Объём: x{rb['volume_x']}\n\n"
-                                "⚠️ <b>ВНИМАНИЕ, НЕ ВХОД</b>\n"
-                                "Открыть график → ждать паузу → брать 3–7%"
-                            )
-                            cs["rb_last_ts"] = now_ts
-                            cs["rb_last_range"] = rb.get("range_pct")
-                # <<< RB ADDED <<<
+                        if rb:
+                            # анти-дубликат: один и тот же флет не повторяем
+                            if rb_last_range != rb.get("range_pct"):
+                                send_telegram(
+                                    "🔵 <b>RANGE → BREAKOUT (5m)</b>\n\n"
+                                    f"<b>{sym}</b>\n"
+                                    f"Флет: {rb['range_pct']}%\n"
+                                    f"Свеча: +{rb['candle_move']}%\n"
+                                    f"Объём: x{rb['volume_x']}\n\n"
+                                    "⚠️ <b>ВНИМАНИЕ, НЕ ВХОД</b>\n"
+                                    "Открыть график → ждать паузу → брать 3–7%"
+                                )
+                                cs["rb_last_ts"] = now_ts
+                                cs["rb_last_range"] = rb.get("range_pct")
 
-                # если мы изменили cs — обязательно вернуть в coins_state,
-                # иначе при continue изменения потеряются
+                # Важно: сохранить cs сразу, чтобы изменения RB не терялись при continue
                 coins_state[cid] = cs
 
                 last_sent_ts = cs.get("last_sent_ts", 0)
@@ -455,7 +466,7 @@ def run_bot():
                 strength_norm = max(1, min(strength, 5))
 
                 if sig_type == "AGG":
-                    title = f"⚠️ <b>AGGRESSIVE</b> — ранний радар"
+                    title = "⚠️ <b>AGGRESSIVE</b> — ранний радар"
                     conclusion = conclusion_for_agg()
                 else:
                     title = f"✅ <b>SAFE</b>{confirmed_tag}"
@@ -468,7 +479,7 @@ def run_bot():
                     f"Сила: {fire} ({strength_norm}/5)\n\n"
                     f"1ч: {chg_1h:.2f}% | 4ч: {chg_4h:.2f}%\n"
                     f"Объём: x{vol_mult:.1f}\n\n"
-                    f"Причины:\n• " + "\n• ".join(reasons) +
+                    "Причины:\n• " + "\n• ".join(reasons) +
                     f"\n\n{memo_intraday()}\n\n"
                     f"🧠 <b>ВЫВОД</b>:\n{conclusion}"
                 )
@@ -511,3 +522,4 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
+
