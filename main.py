@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import statistics
 
+from signals import range_breakout_5m
+
 print("=== CRYPTO RADAR (SAFE + AGGRESSIVE + CONFIRM + STATS + 07:30 FORECAST) ===", flush=True)
 
 # ===== ENV =====
@@ -34,6 +36,9 @@ AGG_IMPULSE_FACTOR = 0.7               # доля от динамическог�
 SAFE_MIN_STRENGTH = 4                  # сила для SAFE
 CONFIRM_WINDOW_HOURS = 6               # окно "AGG → SAFE подтверждён"
 
+# RANGE → BREAKOUT (5m)
+RB_COOLDOWN_MIN = 60                   # анти-спам на монету (синий сигнал)
+
 # отчёты
 FORECAST_HOUR = 7
 FORECAST_MINUTE = 30
@@ -50,6 +55,8 @@ STATE_FILE = os.path.join(STATE_DIR, "crypto_radar_state.json")
 # ===== TELEGRAM =====
 def send_telegram(text: str):
     try:
+        if not BOT_TOKEN or not CHAT_ID:
+            return
         requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"},
@@ -94,6 +101,7 @@ def get_top_coins():
 def get_market_chart(coin_id):
     """
     Берём 2 дня: хватает для 1h/4h логики.
+    CoinGecko отдаёт серии цен/объёмов (не OHLC).
     """
     try:
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
@@ -106,6 +114,29 @@ def get_market_chart(coin_id):
         return pd.Series(prices), pd.Series(vols)
     except:
         return None, None
+
+def build_5m_candles(prices: pd.Series, volumes: pd.Series, window: int = 30):
+    """
+    Упрощённая аппроксимация '5m свечей' из серии цен/объёмов CoinGecko.
+    Нужна только для синего радара внимания.
+    """
+    if prices is None or volumes is None:
+        return None
+    if len(prices) < window or len(volumes) < window:
+        return None
+
+    df = pd.DataFrame({
+        "close": prices.iloc[-window:].values,
+        "volume": volumes.iloc[-window:].values
+    })
+
+    df["open"] = df["close"].shift(1)
+    df["high"] = df[["open", "close"]].max(axis=1)
+    df["low"] = df[["open", "close"]].min(axis=1)
+    df = df.dropna()
+
+    # гарантируем порядок колонок
+    return df[["open", "high", "low", "close", "volume"]]
 
 def pct_change(series, h):
     if len(series) < h + 1:
@@ -191,15 +222,6 @@ def should_fire_at(now_dt, hour, minute):
 def run_bot():
     state = load_state()
 
-    # структура state:
-    # state = {
-    #   "coins": { coin_id: {"last_sent_ts":..., "last_type":"AGG/SAFE", "last_stage":..., "last_strength":..., "last_agg_ts":..., "last_agg_dir": "UP/DOWN"} },
-    #   "stats": { "day":"YYYY-MM-DD", "agg":0, "safe":0, "confirmed":0, "week":"YYYY-WW", "w_agg":0, "w_safe":0, "w_confirmed":0 },
-    #   "last_forecast_day":"YYYY-MM-DD",
-    #   "last_daily_day":"YYYY-MM-DD",
-    #   "last_weekly_week":"YYYY-WW"
-    # }
-
     coins_state = state.get("coins", {})
     stats = state.get("stats", {})
     if not stats:
@@ -238,8 +260,6 @@ def run_bot():
                 coins = get_top_coins()
                 mode = market_mode_snapshot(coins)
 
-                # ориентир по вчерашнему качеству (если есть)
-                y = state.get("yesterday_quality", None)
                 hint = "Тактика: SAFE — основной, AGGRESSIVE — только как радар."
                 if mode.startswith("🟢"):
                     hint = "Тактика: смотри AGGRESSIVE, жди SAFE, работай выборочно."
@@ -304,8 +324,28 @@ def run_bot():
                     continue
 
                 cs = coins_state.get(cid, {})
+
+                # ===== RANGE → BREAKOUT (5m) (параллельно, безопасно) =====
+                rb_last_ts = cs.get("rb_last_ts", 0)
+                if (not rb_last_ts) or ((now_ts - rb_last_ts) >= (RB_COOLDOWN_MIN * 60)):
+                    candles_5m = build_5m_candles(prices, volumes, window=30)
+                    rb = range_breakout_5m(candles_5m)
+                    if rb:
+                        send_telegram(
+                            "🔵 <b>RANGE → BREAKOUT (5m)</b>\n\n"
+                            f"<b>{sym}</b>\n"
+                            f"Флет: {rb['range_pct']}%\n"
+                            f"Свеча: +{rb['candle_move']}%\n"
+                            f"Объём: x{rb['volume_x']}\n\n"
+                            "⚠️ <b>ВНИМАНИЕ, НЕ ВХОД</b>\n"
+                            "Ждать паузу → брать 3–7%"
+                        )
+                        cs["rb_last_ts"] = now_ts
+
+                # ===== COOLDOWN для SAFE/AGG =====
                 last_sent_ts = cs.get("last_sent_ts", 0)
                 if last_sent_ts and (now_ts - last_sent_ts) < (COOLDOWN_MIN * 60):
+                    coins_state[cid] = cs
                     continue
 
                 # расчёты
@@ -318,7 +358,6 @@ def run_bot():
                 chg_4h = pct_change(prices, 4)
                 dyn_thr = dynamic_threshold(prices)
 
-                # направление (грубо) — нужно для "подтверждён"
                 direction = "UP" if chg_1h >= 0 else "DOWN"
 
                 stage = None
@@ -365,13 +404,14 @@ def run_bot():
                 is_safe = (stage == "ЗАПУСК" and strength >= SAFE_MIN_STRENGTH and abs(chg_4h) < OVERHEAT_4H)
 
                 if not is_aggressive and not is_safe:
+                    coins_state[cid] = cs
                     continue
 
-                # выбираем тип: SAFE приоритетнее
                 sig_type = "SAFE" if is_safe else "AGG"
 
                 # анти-дубликат: если одинаковое уже было
-                if cs.get("last_type") == sig_type and cs.get("last_stage") == stage and cs.get("last_strength") == strength:
+                if cs.get("last_type") == sig_type and cs.get("last_stage") == stage and cs.get("last_strength") == max(1, min(strength, 5)):
+                    coins_state[cid] = cs
                     continue
 
                 # --- логика подтверждения ---
@@ -384,10 +424,9 @@ def run_bot():
                         confirmed = True
                         confirmed_tag = "\n<b>AGGRESSIVE → SAFE подтверждён</b>"
 
-                # сформировать сообщение
                 emoji = {"ПОДГОТОВКА": "🟢", "ЗАПУСК": "🟡", "ПЕРЕГРЕВ": "🔴"}.get(stage, "⚪")
-                fire = "🔥" * max(1, min(strength, 5))
                 strength_norm = max(1, min(strength, 5))
+                fire = "🔥" * strength_norm
 
                 if sig_type == "AGG":
                     title = f"⚠️ <b>AGGRESSIVE</b> — ранний радар"
