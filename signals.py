@@ -13,11 +13,12 @@ def range_breakout_5m(df: pd.DataFrame):
         return None
 
     # параметры
-    FLAT_CANDLES = 20
-    MAX_RANGE_PCT = 2.5
-    MIN_CANDLE_MOVE = 1.2
-    MAX_CANDLE_MOVE = 3.0      # фильтр "не после +3%"
-    VOL_MULT = 1.8
+   FLAT_CANDLES = 15        # было 20
+MAX_RANGE_PCT = 4.0     # было 2.5
+MIN_CANDLE_MOVE = 0.6   # было 1.2
+MAX_CANDLE_MOVE = 5.0   # было 3.0
+VOL_MULT = 1.2          # было 1.8
+
 
     recent = df.iloc[-FLAT_CANDLES:]
     high = recent["high"].max()
