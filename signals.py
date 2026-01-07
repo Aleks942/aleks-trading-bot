@@ -3,10 +3,6 @@ import pandas as pd
 import statistics
 
 
-# =========================
-# RANGE → BREAKOUT (5m)
-# =========================
-
 def _get_rb_params():
     test = os.getenv("RB_TEST", "0").strip() == "1"
 
@@ -33,40 +29,50 @@ def range_breakout_5m(df: pd.DataFrame):
         return None
 
     p = _get_rb_params()
-
     flat_candles = int(p["FLAT_CANDLES"])
     max_range_pct = float(p["MAX_RANGE_PCT"])
     min_candle_move = float(p["MIN_CANDLE_MOVE"])
     max_candle_move = float(p["MAX_CANDLE_MOVE"])
     vol_mult = float(p["VOL_MULT"])
 
+    if len(df) < flat_candles + 1:
+        return None
+
     recent = df.iloc[-flat_candles:]
 
-    high = recent["high"].max()
-    low = recent["low"].min()
-    mid = (high + low) / 2
+    high = float(recent["high"].max())
+    low = float(recent["low"].min())
+    mid = (high + low) / 2.0
     if mid == 0:
         return None
 
-    range_pct = (high - low) / mid * 100
+    range_pct = (high - low) / mid * 100.0
     if range_pct > max_range_pct:
         return None
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    prev_close = prev["close"]
-    candle_move = abs((last["close"] - prev_close) / prev_close * 100)
+    prev_close = float(prev["close"])
+    if prev_close == 0:
+        return None
+
+    candle_move = abs((float(last["close"]) - prev_close) / prev_close * 100.0)
     if candle_move < min_candle_move or candle_move > max_candle_move:
         return None
 
-    avg_vol = recent["volume"].mean()
-    volume_x = last["volume"] / avg_vol if avg_vol > 0 else 0
+    avg_volume = float(recent["volume"].mean())
+    if avg_volume <= 0:
+        return None
+
+    volume_x = float(last["volume"]) / avg_volume
     if volume_x < vol_mult:
         return None
 
-    if last["close"] > high or last["close"] < low:
+    last_close = float(last["close"])
+    if last_close > high or last_close < low:
         return {
+            "type": "RANGE_BREAKOUT",
             "range_pct": round(range_pct, 2),
             "candle_move": round(candle_move, 2),
             "volume_x": round(volume_x, 2),
@@ -75,65 +81,59 @@ def range_breakout_5m(df: pd.DataFrame):
     return None
 
 
-# =========================
-# WAVE-3 (BACKWARD SAFE)
-# =========================
-
 def wave3_setup(
     prices,
     volumes,
     impulse_min_pct=6.0,
     pullback_max=0.5,
     flat_max_range=2.5,
-    flat_range_max=None,   # старое имя — поддерживаем
+    flat_range_max=None,   # совместимость
     volume_mult=1.8,
-    **_ignored,            # всё лишнее просто игнорируем
+    **_ignored,            # игнор лишних kwargs
 ):
-    """
-    INFO-сигнал: подготовка к 3-й волне.
-    НЕ вход.
-    """
-
-    # совместимость имён
     if flat_range_max is not None:
         flat_max_range = flat_range_max
 
     if prices is None or volumes is None:
         return None
 
-    if len(prices) < 100:
+    if len(prices) < 100 or len(volumes) < 100:
         return None
 
-    # 1-я волна
     base = prices[-90]
     peak = max(prices[-90:-50])
-    if peak <= base:
+    if peak <= base or base == 0:
         return None
 
-    impulse_pct = (peak - base) / base * 100
+    impulse_pct = (peak - base) / base * 100.0
     if impulse_pct < impulse_min_pct:
         return None
 
-    # откат
     pullback_low = min(prices[-50:-30])
-    pullback_pct = (peak - pullback_low) / (peak - base)
+    denom = (peak - base)
+    if denom <= 0:
+        return None
+
+    pullback_pct = (peak - pullback_low) / denom
     if pullback_pct > pullback_max:
         return None
 
-    # флет
     flat = prices[-30:]
     hi, lo = max(flat), min(flat)
-    mid = (hi + lo) / 2
+    mid = (hi + lo) / 2.0
     if mid == 0:
         return None
 
-    range_pct = (hi - lo) / mid * 100
+    range_pct = abs((hi - lo) / mid * 100.0)
     if range_pct > flat_max_range:
         return None
 
-    # объём
     avg_vol = statistics.mean(volumes[-90:-30])
-    volume_x = volumes[-1] / avg_vol if avg_vol > 0 else 0
+    last_vol = volumes[-1]
+    if avg_vol <= 0:
+        return None
+
+    volume_x = last_vol / avg_vol
     if volume_x < volume_mult:
         return None
 
