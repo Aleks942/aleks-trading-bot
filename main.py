@@ -7,8 +7,6 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import statistics
 
-from signals import range_breakout_5m, wave3_setup
-
 print("=== CRYPTO RADAR (SAFE + AGGRESSIVE + CONFIRM + STATS + 07:30 FORECAST) ===", flush=True)
 
 # ===== ENV =====
@@ -35,23 +33,6 @@ AGG_IMPULSE_FACTOR = 0.7               # доля от динамическог�
 # SAFE (строже)
 SAFE_MIN_STRENGTH = 4                  # сила для SAFE
 CONFIRM_WINDOW_HOURS = 6               # окно "AGG → SAFE подтверждён"
-
-# ===== RANGE → BREAKOUT (5m) =====
-# Включение/выключение без правки кода:
-# RB_ENABLED=1 -> включено (по умолчанию)
-# RB_ENABLED=0 -> выключено
-RB_ENABLED = os.getenv("RB_ENABLED", "1").strip() == "1"
-RB_COOLDOWN_MIN = 60                   # анти-спам по синему сигналу на монету
-RB_WINDOW = 30                         # сколько точек берём для аппроксимации "5m"
-
-# ===== WAVE-3 (INFO) =====
-W3_ENABLED = os.getenv("W3_ENABLED", "1").strip() == "1"
-W3_COOLDOWN_MIN = 120                  # анти-спам по W3 на монету
-# параметры сетапа (можно менять через env при желании)
-W3_IMPULSE_MIN_PCT = float(os.getenv("W3_IMPULSE_MIN_PCT", "6.0"))
-W3_PULLBACK_MAX = float(os.getenv("W3_PULLBACK_MAX", "0.5"))
-W3_FLAT_RANGE_MAX = float(os.getenv("W3_FLAT_RANGE_MAX", "2.5"))
-W3_VOL_MULT = float(os.getenv("W3_VOL_MULT", "1.8"))
 
 # отчёты
 FORECAST_HOUR = 7
@@ -151,33 +132,6 @@ def dynamic_threshold(series):
     except:
         return 1.0
 
-# ===== RANGE → BREAKOUT helpers =====
-def build_5m_candles(prices: pd.Series, volumes: pd.Series, window: int = 30):
-    """
-    CoinGecko отдаёт серии цен/объёма (не OHLC).
-    Мы строим упрощённые "свечи" для детектора флета/пробоя.
-    Это INFO-радар, не торговые свечи.
-    """
-    if prices is None or volumes is None:
-        return None
-    if len(prices) < window or len(volumes) < window:
-        return None
-
-    df = pd.DataFrame({
-        "close": prices.iloc[-window:].values,
-        "volume": volumes.iloc[-window:].values
-    })
-
-    df["open"] = df["close"].shift(1)
-    df["high"] = df[["open", "close"]].max(axis=1)
-    df["low"] = df[["open", "close"]].min(axis=1)
-    df = df.dropna()
-
-    if df.empty:
-        return None
-
-    return df[["open", "high", "low", "close", "volume"]]
-
 # ===== MEMO + CONCLUSION =====
 def memo_intraday():
     return (
@@ -188,15 +142,6 @@ def memo_intraday():
         "⛔ если за 10 минут нет ясности — SKIP"
     )
 
-def memo_by_strength(strength):
-    if strength <= 2:
-        return "• ранний кандидат\n• просто наблюдать\n• без входа"
-    if strength == 3:
-        return "• наблюдай, жди структуру\n• вход только со стопом"
-    if strength >= 4:
-        return "• не FOMO\n• жди паузу/ретест\n• риск не увеличивать"
-    return ""
-
 def conclusion_for_safe():
     return "🟢 <b>МОЖНО ПЛАНИРОВАТЬ</b>\n(вход только по структуре на 5–15m)"
 
@@ -205,9 +150,6 @@ def conclusion_for_agg():
 
 # ===== MARKET MODE (для утреннего прогноза, простая оценка) =====
 def market_mode_snapshot(coins_sample):
-    """
-    Простой срез: сколько монет в плюсе/минусе по 4ч и есть ли 'широкий рынок'.
-    """
     ups = downs = 0
     for c in coins_sample[:60]:
         cid = c.get("id")
@@ -226,7 +168,7 @@ def market_mode_snapshot(coins_sample):
         return "🔴 СЛАБЫЙ"
     return "🟡 НЕЙТРАЛЬНЫЙ"
 
-# ===== REPORTS (daily/weekly + forecast) =====
+# ===== REPORTS =====
 def warsaw_now():
     return datetime.utcnow() + timedelta(hours=WARSAW_OFFSET_HOURS)
 
@@ -240,10 +182,17 @@ def run_bot():
     coins_state = state.get("coins", {})
     stats = state.get("stats", {})
     if not stats:
-        stats = {"day": warsaw_now().strftime("%Y-%m-%d"), "agg": 0, "safe": 0, "confirmed": 0,
-                 "week": warsaw_now().strftime("%G-%V"), "w_agg": 0, "w_safe": 0, "w_confirmed": 0}
+        stats = {
+            "day": warsaw_now().strftime("%Y-%m-%d"),
+            "agg": 0,
+            "safe": 0,
+            "confirmed": 0,
+            "week": warsaw_now().strftime("%G-%V"),
+            "w_agg": 0,
+            "w_safe": 0,
+            "w_confirmed": 0
+        }
 
-    # стартовое сообщение один раз за сутки — через state-файл (чтобы не спамило при рестартах)
     today = warsaw_now().strftime("%Y-%m-%d")
     if state.get("start_day") != today:
         send_telegram("📡 <b>Радар рынка запущен</b>\n200 монет • 1h + 4h • SAFE + AGGRESSIVE • статистика • прогноз 07:30")
@@ -257,7 +206,6 @@ def run_bot():
             day_key = now.strftime("%Y-%m-%d")
             week_key = now.strftime("%G-%V")
 
-            # rollover day/week in stats
             if stats.get("day") != day_key:
                 stats["day"] = day_key
                 stats["agg"] = 0
@@ -270,7 +218,7 @@ def run_bot():
                 stats["w_safe"] = 0
                 stats["w_confirmed"] = 0
 
-            # ===== утренний прогноз (07:30 Warsaw) =====
+            # прогноз 07:30
             if should_fire_at(now, FORECAST_HOUR, FORECAST_MINUTE) and state.get("last_forecast_day") != day_key:
                 coins = get_top_coins()
                 mode = market_mode_snapshot(coins)
@@ -281,16 +229,15 @@ def run_bot():
                 elif mode.startswith("🔴"):
                     hint = "Тактика: осторожно. Пропуск — ок. Только самые чистые SAFE."
 
-                msg = (
+                send_telegram(
                     "🧭 <b>ПРОГНОЗ ДНЯ</b>\n\n"
                     f"Режим рынка: <b>{mode}</b>\n"
                     f"{hint}\n\n"
                     "⛔ Если за 10 минут нет ясности — SKIP."
                 )
-                send_telegram(msg)
                 state["last_forecast_day"] = day_key
 
-            # ===== дневной отчёт (20:30 Warsaw) =====
+            # дневной отчёт 20:30
             if should_fire_at(now, DAILY_REPORT_HOUR, DAILY_REPORT_MINUTE) and state.get("last_daily_day") != day_key:
                 agg = stats.get("agg", 0)
                 safe = stats.get("safe", 0)
@@ -313,7 +260,7 @@ def run_bot():
                 state["last_daily_day"] = day_key
                 state["yesterday_quality"] = quality
 
-            # ===== недельный отчёт (Пн 10:00 Warsaw) =====
+            # недельный отчёт (Пн 10:00)
             if (now.weekday() == WEEKLY_REPORT_WEEKDAY and
                 should_fire_at(now, WEEKLY_REPORT_HOUR, WEEKLY_REPORT_MINUTE) and
                 state.get("last_weekly_week") != week_key):
@@ -326,7 +273,7 @@ def run_bot():
                 )
                 state["last_weekly_week"] = week_key
 
-            # ===== основной радар =====
+            # основной радар
             coins = get_top_coins()
             now_ts = datetime.utcnow().timestamp()
 
@@ -339,63 +286,10 @@ def run_bot():
                     continue
 
                 cs = coins_state.get(cid, {})
-
-                # ===== RANGE → BREAKOUT (5m) INFO ONLY =====
-                if RB_ENABLED:
-                    rb_last_ts = cs.get("rb_last_ts", 0)
-                    rb_last_range = cs.get("rb_last_range", None)
-
-                    if (not rb_last_ts) or ((now_ts - rb_last_ts) >= (RB_COOLDOWN_MIN * 60)):
-                        candles_5m = build_5m_candles(prices, volumes, window=RB_WINDOW)
-                        rb = range_breakout_5m(candles_5m) if candles_5m is not None else None
-
-                        if rb:
-                            if rb_last_range != rb.get("range_pct"):
-                                send_telegram(
-                                    "🔵 <b>RANGE → BREAKOUT (5m)</b>\n\n"
-                                    f"<b>{sym}</b>\n"
-                                    f"Флет: {rb['range_pct']}%\n"
-                                    f"Свеча: +{rb['candle_move']}%\n"
-                                    f"Объём: x{rb['volume_x']}\n\n"
-                                    "⚠️ <b>ВНИМАНИЕ, НЕ ВХОД</b>\n"
-                                    "Открыть график → ждать паузу → брать 3–7%"
-                                )
-                                cs["rb_last_ts"] = now_ts
-                                cs["rb_last_range"] = rb.get("range_pct")
-
-                # ===== 🌊 WAVE-3 SETUP (INFO ONLY) =====
-                if W3_ENABLED:
-                    w3_last_ts = cs.get("w3_last_ts", 0)
-                    if (not w3_last_ts) or ((now_ts - w3_last_ts) >= (W3_COOLDOWN_MIN * 60)):
-                        w3 = wave3_setup(
-                            prices.values, volumes.values,
-                            impulse_min_pct=W3_IMPULSE_MIN_PCT,
-                            pullback_max=W3_PULLBACK_MAX,
-                            flat_range_max=W3_FLAT_RANGE_MAX,
-                            vol_mult_min=W3_VOL_MULT
-                        )
-                        if w3:
-                            send_telegram(
-                                "🟦 <b>WAVE-3 SETUP (5m логика)</b>\n\n"
-                                f"<b>{sym}</b>\n"
-                                f"1-я волна: +{w3['impulse_pct']}%\n"
-                                f"Откат: {w3['pullback_pct']} (≤ {W3_PULLBACK_MAX})\n"
-                                f"Флет: {w3['range_pct']}%\n"
-                                f"Объём: x{w3['volume_x']}\n\n"
-                                "⚠️ <b>НЕ ВХОД</b>\n"
-                                "Открыть график → ждать паузу/ретест → брать 3–7%\n"
-                                "Стоп: под флет"
-                            )
-                            cs["w3_last_ts"] = now_ts
-
-                # Важно: сохранить cs сразу, чтобы изменения RB/W3 не терялись при continue
-                coins_state[cid] = cs
-
                 last_sent_ts = cs.get("last_sent_ts", 0)
                 if last_sent_ts and (now_ts - last_sent_ts) < (COOLDOWN_MIN * 60):
                     continue
 
-                # расчёты
                 price_range = (prices.max() - prices.min()) / prices.mean() * 100.0 if prices.mean() else 0.0
                 vol_avg = volumes[:-12].mean() if len(volumes) > 12 else volumes.mean()
                 vol_now = volumes.iloc[-1]
@@ -411,12 +305,9 @@ def run_bot():
                 reasons = []
                 strength = 0
 
-                if vol_mult >= 1.6:
-                    strength += 1
-                if vol_mult >= 2.0:
-                    strength += 1
-                if vol_mult >= 3.0:
-                    strength += 1
+                if vol_mult >= 1.6: strength += 1
+                if vol_mult >= 2.0: strength += 1
+                if vol_mult >= 3.0: strength += 1
 
                 if vol_mult >= 2.0 and price_range <= FLAT_RANGE_MAX:
                     stage = "ПОДГОТОВКА"
