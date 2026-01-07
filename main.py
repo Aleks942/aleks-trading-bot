@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import statistics
 
-from signals import range_breakout_5m
+from signals import range_breakout_5m, wave3_setup
 
 print("=== CRYPTO RADAR (SAFE + AGGRESSIVE + CONFIRM + STATS + 07:30 FORECAST) ===", flush=True)
 
@@ -43,6 +43,15 @@ CONFIRM_WINDOW_HOURS = 6               # окно "AGG → SAFE подтверж
 RB_ENABLED = os.getenv("RB_ENABLED", "1").strip() == "1"
 RB_COOLDOWN_MIN = 60                   # анти-спам по синему сигналу на монету
 RB_WINDOW = 30                         # сколько точек берём для аппроксимации "5m"
+
+# ===== WAVE-3 (INFO) =====
+W3_ENABLED = os.getenv("W3_ENABLED", "1").strip() == "1"
+W3_COOLDOWN_MIN = 120                  # анти-спам по W3 на монету
+# параметры сетапа (можно менять через env при желании)
+W3_IMPULSE_MIN_PCT = float(os.getenv("W3_IMPULSE_MIN_PCT", "6.0"))
+W3_PULLBACK_MAX = float(os.getenv("W3_PULLBACK_MAX", "0.5"))
+W3_FLAT_RANGE_MAX = float(os.getenv("W3_FLAT_RANGE_MAX", "2.5"))
+W3_VOL_MULT = float(os.getenv("W3_VOL_MULT", "1.8"))
 
 # отчёты
 FORECAST_HOUR = 7
@@ -228,36 +237,16 @@ def should_fire_at(now_dt, hour, minute):
 def run_bot():
     state = load_state()
 
-    # структура state:
-    # state = {
-    #   "coins": { coin_id: {"last_sent_ts":..., "last_type":"AGG/SAFE", "last_stage":..., "last_strength":..., "last_agg_ts":..., "last_agg_dir": "UP/DOWN"} },
-    #   "stats": { "day":"YYYY-MM-DD", "agg":0, "safe":0, "confirmed":0, "week":"YYYY-WW", "w_agg":0, "w_safe":0, "w_confirmed":0 },
-    #   "last_forecast_day":"YYYY-MM-DD",
-    #   "last_daily_day":"YYYY-MM-DD",
-    #   "last_weekly_week":"YYYY-WW"
-    # }
-
     coins_state = state.get("coins", {})
     stats = state.get("stats", {})
     if not stats:
-        stats = {
-            "day": warsaw_now().strftime("%Y-%m-%d"),
-            "agg": 0,
-            "safe": 0,
-            "confirmed": 0,
-            "week": warsaw_now().strftime("%G-%V"),
-            "w_agg": 0,
-            "w_safe": 0,
-            "w_confirmed": 0
-        }
+        stats = {"day": warsaw_now().strftime("%Y-%m-%d"), "agg": 0, "safe": 0, "confirmed": 0,
+                 "week": warsaw_now().strftime("%G-%V"), "w_agg": 0, "w_safe": 0, "w_confirmed": 0}
 
     # стартовое сообщение один раз за сутки — через state-файл (чтобы не спамило при рестартах)
     today = warsaw_now().strftime("%Y-%m-%d")
     if state.get("start_day") != today:
-        send_telegram(
-            "📡 <b>Радар рынка запущен</b>\n"
-            "200 монет • 1h + 4h • SAFE + AGGRESSIVE • статистика • прогноз 07:30"
-        )
+        send_telegram("📡 <b>Радар рынка запущен</b>\n200 монет • 1h + 4h • SAFE + AGGRESSIVE • статистика • прогноз 07:30")
         state["start_day"] = today
 
     save_state({"coins": coins_state, "stats": stats, **{k: v for k, v in state.items() if k not in ("coins", "stats")}})
@@ -325,11 +314,10 @@ def run_bot():
                 state["yesterday_quality"] = quality
 
             # ===== недельный отчёт (Пн 10:00 Warsaw) =====
-            if (
-                now.weekday() == WEEKLY_REPORT_WEEKDAY
-                and should_fire_at(now, WEEKLY_REPORT_HOUR, WEEKLY_REPORT_MINUTE)
-                and state.get("last_weekly_week") != week_key
-            ):
+            if (now.weekday() == WEEKLY_REPORT_WEEKDAY and
+                should_fire_at(now, WEEKLY_REPORT_HOUR, WEEKLY_REPORT_MINUTE) and
+                state.get("last_weekly_week") != week_key):
+
                 send_telegram(
                     "📈 <b>СТАТИСТИКА НЕДЕЛИ</b>\n\n"
                     f"AGGRESSIVE: {stats.get('w_agg', 0)}\n"
@@ -353,7 +341,6 @@ def run_bot():
                 cs = coins_state.get(cid, {})
 
                 # ===== RANGE → BREAKOUT (5m) INFO ONLY =====
-                # Не влияет на SAFE/AGG. Работает даже если монета на cooldown по основному радару.
                 if RB_ENABLED:
                     rb_last_ts = cs.get("rb_last_ts", 0)
                     rb_last_range = cs.get("rb_last_range", None)
@@ -363,7 +350,6 @@ def run_bot():
                         rb = range_breakout_5m(candles_5m) if candles_5m is not None else None
 
                         if rb:
-                            # анти-дубликат: один и тот же флет не повторяем
                             if rb_last_range != rb.get("range_pct"):
                                 send_telegram(
                                     "🔵 <b>RANGE → BREAKOUT (5m)</b>\n\n"
@@ -377,7 +363,32 @@ def run_bot():
                                 cs["rb_last_ts"] = now_ts
                                 cs["rb_last_range"] = rb.get("range_pct")
 
-                # Важно: сохранить cs сразу, чтобы изменения RB не терялись при continue
+                # ===== 🌊 WAVE-3 SETUP (INFO ONLY) =====
+                if W3_ENABLED:
+                    w3_last_ts = cs.get("w3_last_ts", 0)
+                    if (not w3_last_ts) or ((now_ts - w3_last_ts) >= (W3_COOLDOWN_MIN * 60)):
+                        w3 = wave3_setup(
+                            prices.values, volumes.values,
+                            impulse_min_pct=W3_IMPULSE_MIN_PCT,
+                            pullback_max=W3_PULLBACK_MAX,
+                            flat_range_max=W3_FLAT_RANGE_MAX,
+                            vol_mult_min=W3_VOL_MULT
+                        )
+                        if w3:
+                            send_telegram(
+                                "🟦 <b>WAVE-3 SETUP (5m логика)</b>\n\n"
+                                f"<b>{sym}</b>\n"
+                                f"1-я волна: +{w3['impulse_pct']}%\n"
+                                f"Откат: {w3['pullback_pct']} (≤ {W3_PULLBACK_MAX})\n"
+                                f"Флет: {w3['range_pct']}%\n"
+                                f"Объём: x{w3['volume_x']}\n\n"
+                                "⚠️ <b>НЕ ВХОД</b>\n"
+                                "Открыть график → ждать паузу/ретест → брать 3–7%\n"
+                                "Стоп: под флет"
+                            )
+                            cs["w3_last_ts"] = now_ts
+
+                # Важно: сохранить cs сразу, чтобы изменения RB/W3 не терялись при continue
                 coins_state[cid] = cs
 
                 last_sent_ts = cs.get("last_sent_ts", 0)
@@ -394,14 +405,12 @@ def run_bot():
                 chg_4h = pct_change(prices, 4)
                 dyn_thr = dynamic_threshold(prices)
 
-                # направление (грубо) — нужно для "подтверждён"
                 direction = "UP" if chg_1h >= 0 else "DOWN"
 
                 stage = None
                 reasons = []
                 strength = 0
 
-                # сила от объёма
                 if vol_mult >= 1.6:
                     strength += 1
                 if vol_mult >= 2.0:
@@ -409,48 +418,39 @@ def run_bot():
                 if vol_mult >= 3.0:
                     strength += 1
 
-                # подготовка
                 if vol_mult >= 2.0 and price_range <= FLAT_RANGE_MAX:
                     stage = "ПОДГОТОВКА"
                     reasons += ["Цена во флете", f"Объём x{vol_mult:.1f}"]
                     strength += 1
 
-                # запуск
                 launch_impulse = abs(chg_1h) >= dyn_thr
                 if vol_mult >= 3.0 and launch_impulse:
                     stage = "ЗАПУСК"
                     reasons += [f"Импульс 1ч {chg_1h:.2f}%", "Есть объём"]
                     strength += 1
 
-                # перегрев
                 if abs(chg_4h) >= OVERHEAT_4H:
                     stage = "ПЕРЕГРЕВ"
                     reasons += [f"Импульс 4ч {chg_4h:.2f}%", "Риск выдоха"]
                     strength += 1
 
-                # подтверждение 1h + 4h в одну сторону
                 if chg_1h * chg_4h > 0:
                     strength += 1
                     reasons.append("1h + 4h в одну сторону")
 
-                # --------- AGGRESSIVE условия (раньше SAFE) ----------
                 agg_impulse = abs(chg_1h) >= max(dyn_thr * AGG_IMPULSE_FACTOR, 0.6)
                 is_aggressive = (vol_mult >= AGG_VOL_MIN and agg_impulse and stage != "ПЕРЕГРЕВ")
 
-                # --------- SAFE условия (строже) ----------
                 is_safe = (stage == "ЗАПУСК" and strength >= SAFE_MIN_STRENGTH and abs(chg_4h) < OVERHEAT_4H)
 
                 if not is_aggressive and not is_safe:
                     continue
 
-                # выбираем тип: SAFE приоритетнее
                 sig_type = "SAFE" if is_safe else "AGG"
 
-                # анти-дубликат: если одинаковое уже было
                 if cs.get("last_type") == sig_type and cs.get("last_stage") == stage and cs.get("last_strength") == strength:
                     continue
 
-                # --- логика подтверждения ---
                 confirmed_tag = ""
                 confirmed = False
                 if sig_type == "SAFE":
@@ -460,7 +460,6 @@ def run_bot():
                         confirmed = True
                         confirmed_tag = "\n<b>AGGRESSIVE → SAFE подтверждён</b>"
 
-                # сформировать сообщение
                 emoji = {"ПОДГОТОВКА": "🟢", "ЗАПУСК": "🟡", "ПЕРЕГРЕВ": "🔴"}.get(stage, "⚪")
                 fire = "🔥" * max(1, min(strength, 5))
                 strength_norm = max(1, min(strength, 5))
@@ -486,20 +485,17 @@ def run_bot():
 
                 send_telegram(msg)
 
-                # обновить стейт монеты
                 cs["last_sent_ts"] = now_ts
                 cs["last_type"] = sig_type
                 cs["last_stage"] = stage
                 cs["last_strength"] = strength_norm
 
-                # сохранить AGG “якорь” для будущего подтверждения
                 if sig_type == "AGG":
                     cs["last_agg_ts"] = now_ts
                     cs["last_agg_dir"] = direction
 
                 coins_state[cid] = cs
 
-                # обновить статистику
                 if sig_type == "AGG":
                     stats["agg"] = stats.get("agg", 0) + 1
                     stats["w_agg"] = stats.get("w_agg", 0) + 1
@@ -510,7 +506,6 @@ def run_bot():
                         stats["confirmed"] = stats.get("confirmed", 0) + 1
                         stats["w_confirmed"] = stats.get("w_confirmed", 0) + 1
 
-            # сохранить состояние
             state["coins"] = coins_state
             state["stats"] = stats
             save_state(state)
@@ -522,4 +517,3 @@ def run_bot():
 
 if __name__ == "__main__":
     run_bot()
-
