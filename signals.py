@@ -94,3 +94,56 @@ def range_breakout_5m(df: pd.DataFrame):
         }
 
     return None
+import statistics
+
+def wave3_setup(prices, volumes):
+    """
+    INFO-сигнал: подготовка к 3-й волне.
+    НЕ вход.
+    """
+
+    if prices is None or volumes is None:
+        return None
+
+    if len(prices) < 100:
+        return None
+
+    # ---- 1-я волна (импульс) ----
+    base = prices[-90]
+    peak = max(prices[-90:-50])
+
+    if peak <= base:
+        return None
+
+    impulse_pct = (peak - base) / base * 100
+    if impulse_pct < 6:
+        return None
+
+    # ---- откат ----
+    pullback_low = min(prices[-50:-30])
+    pullback_pct = (peak - pullback_low) / (peak - base)
+
+    if pullback_pct > 0.5:
+        return None
+
+    # ---- флет после отката ----
+    flat = prices[-30:]
+    hi, lo = max(flat), min(flat)
+    mid = (hi + lo) / 2
+
+    range_pct = abs((hi - lo) / mid * 100)
+    if range_pct > 2.5:
+        return None
+
+    # ---- объём ----
+    avg_vol = statistics.mean(volumes[-90:-30])
+    last_vol = volumes[-1]
+
+    if avg_vol == 0 or last_vol / avg_vol < 1.8:
+        return None
+
+    return {
+        "impulse_pct": round(impulse_pct, 2),
+        "range_pct": round(range_pct, 2),
+        "volume_x": round(last_vol / avg_vol, 2)
+    }
