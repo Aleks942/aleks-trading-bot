@@ -560,6 +560,7 @@ def run_bot():
                     "📊 <b>MARKET INTELLIGENCE</b>\n\n"
                     f"Режим рынка: {regime}\n"
                     f"Открытый интерес: {oi_bias}\n"
+                    f"Volatility: {vol_mode}\n"
                     f"Risk Score: <b>{risk_score}/100</b>\n"
                 )
             
