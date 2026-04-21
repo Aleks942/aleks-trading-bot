@@ -759,6 +759,14 @@ def run_bot():
                 if risk_score > 65 and is_safe:
                     strength += 1
 
+                vol_mode = state.get("vol_mode", "NORMAL")
+
+                if vol_mode == "HIGH" and risk_score < 55:
+                    is_aggressive = False
+                
+                if vol_mode == "LOW":
+                    is_aggressive = False
+
                 if not is_aggressive and not is_safe:
                     continue
 
