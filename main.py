@@ -535,8 +535,20 @@ def run_bot():
                 agg_impulse = abs(chg_1h) >= max(dyn_thr * AGG_IMPULSE_FACTOR, 0.6)
                 is_aggressive = (vol_mult >= AGG_VOL_MIN and agg_impulse and stage != "ПЕРЕГРЕВ")
 
-                # --------- SAFE условия (строже) ----------
-                is_safe = (stage == "ЗАПУСК" and strength >= SAFE_MIN_STRENGTH and abs(chg_4h) < OVERHEAT_4H)
+                # --------- SAFE условия (строже + HTF фильтр) ----------
+                is_safe = (
+                    stage == "ЗАПУСК"
+                    and strength >= SAFE_MIN_STRENGTH
+                    and abs(chg_4h) < OVERHEAT_4H
+                )
+                
+                # направление сигнала
+                signal_direction = "LONG" if chg_1h >= 0 else "SHORT"
+                
+                # SAFE разрешаем только если совпадает с HTF
+                if is_safe:
+                    if htf_bias != signal_direction:
+                        is_safe = False
 
                 if not is_aggressive and not is_safe:
                     continue
