@@ -480,12 +480,17 @@ def run_bot():
                 state["market_regime"] = regime
                 oi_bias = aggregate_oi_bias()
                 state["last_oi_bias"] = oi_bias
+
+                risk_score = calculate_risk_score(state, coins_sample)
+                
             
-                send_telegram(
+               send_telegram(
                     "📊 <b>MARKET INTELLIGENCE</b>\n\n"
                     f"Режим рынка: {regime}\n"
                     f"Открытый интерес: {oi_bias}\n"
+                    f"Risk Score: <b>{risk_score}/100</b>\n"
                 )
+    
             
                 state["last_oi_hour"] = current_hour
 
