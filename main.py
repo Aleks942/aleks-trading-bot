@@ -479,6 +479,7 @@ def run_bot():
                 regime = calculate_market_regime(coins_sample)
                 state["market_regime"] = regime
                 oi_bias = aggregate_oi_bias()
+                state["last_oi_bias"] = oi_bias
             
                 send_telegram(
                     "📊 <b>MARKET INTELLIGENCE</b>\n\n"
