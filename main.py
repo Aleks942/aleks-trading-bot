@@ -203,6 +203,33 @@ def warsaw_now():
 def should_fire_at(now_dt, hour, minute):
     return now_dt.hour == hour and now_dt.minute == minute
 
+def dynamic_threshold(series):
+    ...
+    return 1.0
+
+
+# ===== HTF TREND ANALYSIS (H4 + D1) =====
+def analyze_htf_trend(prices: pd.Series):
+
+    if len(prices) < 48:
+        return "RANGE"
+
+    ema20 = prices.ewm(span=20).mean()
+
+    last_price = prices.iloc[-1]
+    last_ema = ema20.iloc[-1]
+    prev_ema = ema20.iloc[-5]
+
+    ema_slope = last_ema - prev_ema
+
+    if last_price > last_ema and ema_slope > 0:
+        return "LONG"
+
+    if last_price < last_ema and ema_slope < 0:
+        return "SHORT"
+
+    return "RANGE"
+
 # ===== BYBIT OI ANALYSIS =====
 
 BYBIT_BASE = "https://api.bybit.com"
