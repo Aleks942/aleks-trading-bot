@@ -670,6 +670,20 @@ def run_bot():
                     if htf_bias != signal_direction:
                         is_safe = False
 
+                risk_score = state.get("risk_score", 50)
+
+                # 🚨 Risk OFF — режем агрессию
+                if risk_score < 40:
+                    is_aggressive = False
+                
+                # 🚨 Полный Risk OFF — SAFE тоже режем
+                if risk_score < 30:
+                    is_safe = False
+                
+                # 🔥 Risk ON — усиливаем SAFE
+                if risk_score > 65 and is_safe:
+                    strength += 1
+
                 if not is_aggressive and not is_safe:
                     continue
 
