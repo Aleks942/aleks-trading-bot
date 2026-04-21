@@ -119,6 +119,24 @@ def get_market_chart(coin_id):
     except:
         return None, None
 
+def get_btc_trend():
+    try:
+        prices, _ = get_market_chart("bitcoin")
+        if prices is None:
+            return "RANGE"
+
+        ema50 = prices.ewm(span=50).mean()
+        last_price = prices.iloc[-1]
+        last_ema = ema50.iloc[-1]
+
+        if last_price > last_ema:
+            return "LONG"
+        elif last_price < last_ema:
+            return "SHORT"
+        return "RANGE"
+    except:
+        return "RANGE"
+
 def pct_change(series, h):
     if len(series) < h + 1:
         return 0.0
