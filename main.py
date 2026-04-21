@@ -472,7 +472,7 @@ def run_bot():
             current_hour = now.strftime("%Y-%m-%d %H")
             last_oi_hour = state.get("last_oi_hour")
             
-            if now.minute == 0 and last_oi_hour != current_hour:
+            if now.strftime("%Y-%m-%d %H") != state.get("last_oi_hour"):
             
                 coins_sample = get_top_coins()
                 regime = calculate_market_regime(coins_sample)
