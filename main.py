@@ -663,8 +663,7 @@ def run_bot():
                     elif "SHORT MARKET" in market_regime and signal_direction == "LONG":
                         is_safe = False
                 
-                # направление сигнала
-                signal_direction = "LONG" if chg_1h >= 0 else "SHORT"
+             
                 
                 # SAFE разрешаем только если совпадает с HTF
                 if is_safe:
