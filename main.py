@@ -490,6 +490,7 @@ def run_bot():
                 )
             
                 state["last_oi_hour"] = current_hour
+                save_state(state)
 
         
 
