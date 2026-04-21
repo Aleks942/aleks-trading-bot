@@ -470,9 +470,8 @@ def run_bot():
 
             # ===== HOURLY MARKET INTELLIGENCE =====
             current_hour = now.strftime("%Y-%m-%d %H")
-            last_oi_hour = state.get("last_oi_hour")
-            
-            if now.strftime("%Y-%m-%d %H") != state.get("last_oi_hour"):
+
+            if current_hour != state.get("last_oi_hour"):
             
                 coins_sample = get_top_coins()
                 regime = calculate_market_regime(coins_sample)
