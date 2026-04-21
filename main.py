@@ -602,6 +602,8 @@ def run_bot():
                 chg_4h = pct_change(prices, 4)
                 dyn_thr = dynamic_threshold(prices)
 
+                signal_direction = "LONG" if chg_1h >= 0 else "SHORT"
+
                 # направление (грубо) — нужно для "подтверждён"
                 direction = "UP" if chg_1h >= 0 else "DOWN"
 
