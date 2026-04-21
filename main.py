@@ -598,6 +598,15 @@ def run_bot():
                     and strength >= SAFE_MIN_STRENGTH
                     and abs(chg_4h) < OVERHEAT_4H
                 )
+
+                # ===== GLOBAL MARKET FILTER =====
+                market_regime = state.get("market_regime", "🟡 RANGE MARKET")
+                
+                if is_safe:
+                    if "LONG MARKET" in market_regime and signal_direction == "SHORT":
+                        is_safe = False
+                    elif "SHORT MARKET" in market_regime and signal_direction == "LONG":
+                        is_safe = False
                 
                 # направление сигнала
                 signal_direction = "LONG" if chg_1h >= 0 else "SHORT"
