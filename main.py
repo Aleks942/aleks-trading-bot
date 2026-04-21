@@ -335,6 +335,13 @@ def run_bot():
             day_key = now.strftime("%Y-%m-%d")
             week_key = now.strftime("%G-%V")
 
+            if now.minute == 0:
+                oi_bias = aggregate_oi_bias()
+                send_telegram(
+                    "📊 <b>СОСТОЯНИЕ КРИПТО-РЫНКА</b>\n\n"
+                    f"Открытый интерес: {oi_bias}\n"
+                )
+
             # rollover day/week in stats
             if stats.get("day") != day_key:
                 stats["day"] = day_key
