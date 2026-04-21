@@ -363,6 +363,63 @@ def calculate_market_regime(coins):
     else:
         return "🟡 RANGE MARKET"
 
+# ===== RISK SCORE ENGINE =====
+def calculate_risk_score(state, coins_sample):
+
+    score = 50  # базовая нейтральная точка
+
+    # 1️⃣ Режим рынка
+    regime = state.get("market_regime", "🟡 RANGE MARKET")
+
+    if "LONG MARKET" in regime:
+        score += 15
+    elif "SHORT MARKET" in regime:
+        score -= 15
+
+    # 2️⃣ OI bias
+    oi_bias = state.get("last_oi_bias")
+
+    if oi_bias == "BULLISH":
+        score += 10
+    elif oi_bias == "BEARISH":
+        score -= 10
+
+    # 3️⃣ Ширина рынка (растущие монеты)
+    up = 0
+    down = 0
+    total = 0
+
+    for coin in coins_sample[:40]:
+        cid = coin.get("id")
+        if not cid:
+            continue
+
+        prices, _ = get_market_chart(cid)
+        if prices is None:
+            continue
+
+        chg4 = pct_change(prices, 4)
+
+        if chg4 > 1:
+            up += 1
+        elif chg4 < -1:
+            down += 1
+
+        total += 1
+
+    if total > 0:
+        breadth = (up - down) / total
+
+        if breadth > 0.3:
+            score += 10
+        elif breadth < -0.3:
+            score -= 10
+
+    # ограничение
+    score = max(0, min(100, score))
+
+    return score
+
 # ===== MAIN =====
 def run_bot():
     state = load_state()
