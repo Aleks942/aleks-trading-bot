@@ -400,6 +400,13 @@ def calculate_market_regime(coins):
 # ===== RISK SCORE ENGINE =====
 def calculate_risk_score(state, coins_sample):
 
+    btc_trend = get_btc_trend()
+
+    if btc_trend == "LONG":
+        score += 10
+    elif btc_trend == "SHORT":
+        score -= 10
+
     score = 50  # базовая нейтральная точка
 
     # 1️⃣ Режим рынка
