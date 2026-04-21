@@ -203,9 +203,7 @@ def warsaw_now():
 def should_fire_at(now_dt, hour, minute):
     return now_dt.hour == hour and now_dt.minute == minute
 
-def dynamic_threshold(series):
-    ...
-    return 1.0
+
 
 
 # ===== HTF TREND ANALYSIS =====
