@@ -368,6 +368,16 @@ def run_bot():
                 send_telegram(msg)
                 state["last_forecast_day"] = day_key
 
+            # ===== HOURLY MARKET INTELLIGENCE =====
+            if now.minute == 0:
+                oi_bias = aggregate_oi_bias()
+            
+                send_telegram(
+                    "📊 <b>СОСТОЯНИЕ КРИПТО-РЫНКА</b>\n\n"
+                    f"Открытый интерес: {oi_bias}\n"
+                    "Это анализ топ-20 USDT перпетуалов.\n"
+                )
+
             # ===== дневной отчёт (20:30 Warsaw) =====
             if should_fire_at(now, DAILY_REPORT_HOUR, DAILY_REPORT_MINUTE) and state.get("last_daily_day") != day_key:
                 agg = stats.get("agg", 0)
