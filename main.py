@@ -412,16 +412,22 @@ def run_bot():
             day_key = now.strftime("%Y-%m-%d")
             week_key = now.strftime("%G-%V")
 
-            # ===== HOURLY OI REPORT =====
+            # ===== HOURLY MARKET INTELLIGENCE =====
             current_hour = now.strftime("%Y-%m-%d %H")
             last_oi_hour = state.get("last_oi_hour")
             
             if now.minute == 0 and last_oi_hour != current_hour:
+            
+                coins_sample = get_top_coins()
+                regime = calculate_market_regime(coins_sample)
                 oi_bias = aggregate_oi_bias()
+            
                 send_telegram(
-                    "📊 <b>СОСТОЯНИЕ КРИПТО-РЫНКА</b>\n\n"
+                    "📊 <b>MARKET INTELLIGENCE</b>\n\n"
+                    f"Режим рынка: {regime}\n"
                     f"Открытый интерес: {oi_bias}\n"
                 )
+            
                 state["last_oi_hour"] = current_hour
 
         
