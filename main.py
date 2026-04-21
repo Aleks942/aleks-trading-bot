@@ -118,6 +118,35 @@ def get_btc_trend():
     except:
         return "RANGE"
 
+def calculate_volatility_mode(coins_sample):
+
+    vol_sum = 0
+    count = 0
+
+    for coin in coins_sample[:30]:
+        cid = coin.get("id")
+        if not cid:
+            continue
+
+        prices, _ = get_market_chart(cid)
+        if prices is None:
+            continue
+
+        vol_sum += abs(pct_change(prices, 4))
+        count += 1
+
+    if count == 0:
+        return "NORMAL"
+
+    avg_move = vol_sum / count
+
+    if avg_move > 5:
+        return "HIGH"
+    elif avg_move < 1.5:
+        return "LOW"
+    else:
+        return "NORMAL"
+
 def get_market_chart(coin_id):
     """
     Берём 2 дня: хватает для 1h/4h логики.
