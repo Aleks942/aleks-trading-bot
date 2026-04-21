@@ -458,7 +458,7 @@ def run_bot():
     if state.get("start_day") != today:
         send_telegram("📡 <b>Радар рынка запущен</b>\n200 монет • 1h + 4h • SAFE + AGGRESSIVE • статистика • прогноз 07:30")
         state["start_day"] = today
-        send_telegram("🧪 TEST MESSAGE")
+        
 
     save_state({"coins": coins_state, "stats": stats, **{k: v for k, v in state.items() if k not in ("coins", "stats")}})
 
