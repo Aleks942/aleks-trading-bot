@@ -420,6 +420,7 @@ def run_bot():
             
                 coins_sample = get_top_coins()
                 regime = calculate_market_regime(coins_sample)
+                state["market_regime"] = regime
                 oi_bias = aggregate_oi_bias()
             
                 send_telegram(
