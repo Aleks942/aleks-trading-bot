@@ -203,6 +203,89 @@ def warsaw_now():
 def should_fire_at(now_dt, hour, minute):
     return now_dt.hour == hour and now_dt.minute == minute
 
+# ===== BYBIT OI ANALYSIS =====
+
+BYBIT_BASE = "https://api.bybit.com"
+
+def get_top20_usdt_perps():
+    try:
+        r = requests.get(
+            f"{BYBIT_BASE}/v5/market/tickers",
+            params={"category": "linear"},
+            timeout=20
+        ).json()
+        items = r.get("result", {}).get("list", [])
+        usdt = [x for x in items if x.get("symbol","").endswith("USDT")]
+        usdt.sort(key=lambda x: float(x.get("turnover24h", 0)), reverse=True)
+        return [x["symbol"] for x in usdt[:20]]
+    except:
+        return []
+
+def get_oi_and_price_1h(symbol):
+    try:
+        oi = requests.get(
+            f"{BYBIT_BASE}/v5/market/open-interest",
+            params={"category":"linear","symbol":symbol,"intervalTime":"1h","limit":2},
+            timeout=20
+        ).json().get("result", {}).get("list", [])
+
+        if len(oi) < 2:
+            return None
+
+        oi_now = float(oi[0]["openInterest"])
+        oi_prev = float(oi[1]["openInterest"])
+        oi_delta = (oi_now - oi_prev) / oi_prev * 100 if oi_prev else 0
+
+        kl = requests.get(
+            f"{BYBIT_BASE}/v5/market/kline",
+            params={"category":"linear","symbol":symbol,"interval":"60","limit":2},
+            timeout=20
+        ).json().get("result", {}).get("list", [])
+
+        if len(kl) < 2:
+            return None
+
+        close_now = float(kl[0][4])
+        close_prev = float(kl[1][4])
+        price_delta = (close_now - close_prev) / close_prev * 100 if close_prev else 0
+
+        return {"oi_delta": oi_delta, "price_delta": price_delta}
+    except:
+        return None
+
+def aggregate_oi_bias():
+    symbols = get_top20_usdt_perps()
+    long_build = short_build = long_squeeze = short_squeeze = 0
+
+    for s in symbols:
+        data = get_oi_and_price_1h(s)
+        if not data:
+            continue
+        p = data["price_delta"]
+        o = data["oi_delta"]
+
+        if p > 0 and o > 0:
+            long_build += 1
+        elif p < 0 and o > 0:
+            short_build += 1
+        elif p > 0 and o < 0:
+            short_squeeze += 1
+        elif p < 0 and o < 0:
+            long_squeeze += 1
+
+    total = max(1, len(symbols))
+
+    if long_build / total > 0.35:
+        return "Наращиваются лонги"
+    if short_build / total > 0.35:
+        return "Наращиваются шорты"
+    if short_squeeze / total > 0.35:
+        return "Идёт вынос шортов"
+    if long_squeeze / total > 0.35:
+        return "Идёт вынос лонгов"
+
+    return "Баланс позиций"
+
 # ===== MAIN =====
 def run_bot():
     state = load_state()
