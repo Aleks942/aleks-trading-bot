@@ -208,8 +208,14 @@ def dynamic_threshold(series):
     return 1.0
 
 
-# ===== HTF TREND ANALYSIS (H4 + D1) =====
+# ===== HTF TREND ANALYSIS =====
 def analyze_htf_trend(prices: pd.Series):
+
+    if prices is None:
+        return "RANGE"
+
+    if not isinstance(prices, pd.Series):
+        return "RANGE"
 
     if len(prices) < 48:
         return "RANGE"
