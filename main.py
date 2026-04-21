@@ -349,6 +349,33 @@ def get_oi_and_price_1h(symbol):
     except:
         return None
 
+def smart_money_signal(symbol):
+    """
+    Анализ поведения Smart Money через OI + Price.
+    symbol должен быть вида BTCUSDT.
+    """
+
+    data = get_oi_and_price_1h(symbol)
+    if not data:
+        return None
+
+    price_delta = data["price_delta"]
+    oi_delta = data["oi_delta"]
+
+    # 1️⃣ Набор лонгов (цена растёт + OI растёт)
+    if price_delta > 0.5 and oi_delta > 1:
+        return "LONG_BUILD"
+
+    # 2️⃣ Набор шортов (цена падает + OI растёт)
+    if price_delta < -0.5 and oi_delta > 1:
+        return "SHORT_BUILD"
+
+    # 3️⃣ Скрытая аккумуляция (цена стоит, OI растёт)
+    if abs(price_delta) < 0.3 and oi_delta > 1.5:
+        return "ACCUMULATION"
+
+    return None
+
 def aggregate_oi_bias():
     symbols = get_top20_usdt_perps()
     long_build = short_build = long_squeeze = short_squeeze = 0
