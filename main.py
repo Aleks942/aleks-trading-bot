@@ -470,6 +470,7 @@ def run_bot():
                     continue
 
                 prices, volumes = get_market_chart(cid)
+                htf_bias = analyze_htf_trend(prices)         
                 if prices is None:
                     continue
 
