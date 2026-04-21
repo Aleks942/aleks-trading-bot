@@ -553,6 +553,8 @@ def run_bot():
                 state["last_oi_bias"] = oi_bias
             
                 risk_score = calculate_risk_score(state, coins_sample)
+                vol_mode = calculate_volatility_mode(coins_sample)
+                state["vol_mode"] = vol_mode
             
                 send_telegram(
                     "📊 <b>MARKET INTELLIGENCE</b>\n\n"
