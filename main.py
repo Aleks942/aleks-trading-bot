@@ -572,6 +572,7 @@ def run_bot():
 
                 msg = (
                     f"{title}\n"
+                    f"📈 HTF: <b>{htf_bias}</b>\n"
                     f"{emoji} <b>{sym}</b>\n"
                     f"Стадия: <b>{stage}</b>\n"
                     f"Сила: {fire} ({strength_norm}/5)\n\n"
