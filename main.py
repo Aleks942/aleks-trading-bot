@@ -319,6 +319,50 @@ def aggregate_oi_bias():
 
     return "Баланс позиций"
 
+# ===== GLOBAL MARKET REGIME =====
+def calculate_market_regime(coins):
+    """
+    Определяет общий режим рынка на основе 4ч движения топ-монет.
+    """
+
+    long_count = 0
+    short_count = 0
+    total = 0
+
+    for coin in coins[:50]:
+        if not isinstance(coin, dict):
+            continue
+
+        cid = coin.get("id")
+        if not cid:
+            continue
+
+        prices, _ = get_market_chart(cid)
+        if prices is None:
+            continue
+
+        chg4 = pct_change(prices, 4)
+
+        if chg4 > 1.0:
+            long_count += 1
+        elif chg4 < -1.0:
+            short_count += 1
+
+        total += 1
+
+    if total == 0:
+        return "🟡 RANGE"
+
+    long_ratio = long_count / total
+    short_ratio = short_count / total
+
+    if long_ratio > 0.6:
+        return "🟢 LONG MARKET"
+    elif short_ratio > 0.6:
+        return "🔴 SHORT MARKET"
+    else:
+        return "🟡 RANGE MARKET"
+
 # ===== MAIN =====
 def run_bot():
     state = load_state()
