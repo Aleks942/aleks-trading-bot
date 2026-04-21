@@ -335,12 +335,19 @@ def run_bot():
             day_key = now.strftime("%Y-%m-%d")
             week_key = now.strftime("%G-%V")
 
-            if now.minute == 0:
+            # ===== HOURLY OI REPORT =====
+            current_hour = now.strftime("%Y-%m-%d %H")
+            last_oi_hour = state.get("last_oi_hour")
+            
+            if now.minute == 0 and last_oi_hour != current_hour:
                 oi_bias = aggregate_oi_bias()
                 send_telegram(
                     "📊 <b>СОСТОЯНИЕ КРИПТО-РЫНКА</b>\n\n"
                     f"Открытый интерес: {oi_bias}\n"
                 )
+                state["last_oi_hour"] = current_hour
+
+        
 
             # rollover day/week in stats
             if stats.get("day") != day_key:
