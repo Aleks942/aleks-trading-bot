@@ -19,7 +19,7 @@ WARSAW_OFFSET_HOURS = 1
 
 # ===== SETTINGS =====
 CHECK_INTERVAL_SEC = 60 * 10            # цикл 10 минут
-COINS_LIMIT = 200
+COINS_LIMIT = 80
 
 # фильтры/пороговые
 FLAT_RANGE_MAX = 1.5                   # % диапазон флета для "подготовки"
