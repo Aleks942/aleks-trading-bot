@@ -883,8 +883,10 @@ def run_bot():
 
         time.sleep(CHECK_INTERVAL_SEC)
 
+
 @app.on_event("startup")
 def start_background_bot():
+    print(">>> STARTUP EVENT TRIGGERED", flush=True)
     thread = threading.Thread(target=run_bot)
     thread.daemon = True
     thread.start()
