@@ -456,6 +456,9 @@ def calculate_market_regime(coins):
 # ===== RISK SCORE ENGINE =====
 def calculate_risk_score(state, coins_sample):
 
+    score = 50  # базовая нейтральная точка
+
+    # 1️⃣ BTC тренд
     btc_trend = get_btc_trend()
 
     if btc_trend == "LONG":
@@ -463,9 +466,7 @@ def calculate_risk_score(state, coins_sample):
     elif btc_trend == "SHORT":
         score -= 10
 
-    score = 50  # базовая нейтральная точка
-
-    # 1️⃣ Режим рынка
+    # 2️⃣ Режим рынка
     regime = state.get("market_regime", "🟡 RANGE MARKET")
 
     if "LONG MARKET" in regime:
@@ -473,20 +474,21 @@ def calculate_risk_score(state, coins_sample):
     elif "SHORT MARKET" in regime:
         score -= 15
 
-    # 2️⃣ OI bias
+    # 3️⃣ OI bias
     oi_bias = state.get("last_oi_bias")
 
-    if oi_bias == "BULLISH":
-        score += 10
-    elif oi_bias == "BEARISH":
-        score -= 10
+    if oi_bias:
+        if "лонги" in oi_bias.lower():
+            score += 10
+        elif "шорты" in oi_bias.lower():
+            score -= 10
 
-    # 3️⃣ Ширина рынка (растущие монеты)
+    # 4️⃣ Ширина рынка
     up = 0
     down = 0
     total = 0
 
-    for coin in coins_sample[:40]:
+    for coin in coins_sample[:30]:
         cid = coin.get("id")
         if not cid:
             continue
@@ -512,7 +514,7 @@ def calculate_risk_score(state, coins_sample):
         elif breadth < -0.3:
             score -= 10
 
-    # ограничение
+    # ограничение 0–100
     score = max(0, min(100, score))
 
     return score
