@@ -889,6 +889,21 @@ def start_background_bot():
     thread.daemon = True
     thread.start()
 
+@app.post("/webhook")
+async def tradingview_webhook(request: Request):
+    data = await request.json()
+
+    symbol = data.get("symbol", "UNKNOWN")
+    action = data.get("action", "signal")
+
+    send_telegram(
+        f"📩 <b>TRADINGVIEW SIGNAL</b>\n\n"
+        f"Монета: <b>{symbol}</b>\n"
+        f"Действие: {action}"
+    )
+
+    return {"status": "ok"}
+
 
 
 
