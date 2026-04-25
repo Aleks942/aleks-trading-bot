@@ -6,11 +6,21 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import statistics
-
-# 🔥 ДОБАВИТЬ ЭТО:
-from fastapi import FastAPI, Request
 import threading
-app = FastAPI()
+from fastapi import FastAPI, Request
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(">>> LIFESPAN STARTED", flush=True)
+
+    thread = threading.Thread(target=run_bot)
+    thread.daemon = True
+    thread.start()
+
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 print("=== CRYPTO RADAR (SAFE + AGGRESSIVE + CONFIRM + STATS + 07:30 FORECAST) ===", flush=True)
 
@@ -883,13 +893,18 @@ def run_bot():
 
         time.sleep(CHECK_INTERVAL_SEC)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(">>> LIFESPAN STARTED", flush=True)
 
-@app.on_event("startup")
-def start_background_bot():
-    print(">>> STARTUP EVENT TRIGGERED", flush=True)
     thread = threading.Thread(target=run_bot)
     thread.daemon = True
     thread.start()
+
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
 
 @app.post("/webhook")
 async def tradingview_webhook(request: Request):
