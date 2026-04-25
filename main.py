@@ -7,6 +7,11 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import statistics
 
+# 🔥 ДОБАВИТЬ ЭТО:
+from fastapi import FastAPI, Request
+import threading
+app = FastAPI()
+
 print("=== CRYPTO RADAR (SAFE + AGGRESSIVE + CONFIRM + STATS + 07:30 FORECAST) ===", flush=True)
 
 # ===== ENV =====
