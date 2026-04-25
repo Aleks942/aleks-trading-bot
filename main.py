@@ -883,5 +883,13 @@ def run_bot():
 
         time.sleep(CHECK_INTERVAL_SEC)
 
+@app.on_event("startup")
+def start_background_bot():
+    thread = threading.Thread(target=run_bot)
+    thread.daemon = True
+    thread.start()
+
+
+
 if __name__ == "__main__":
     run_bot()
